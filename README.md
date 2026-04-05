@@ -46,6 +46,9 @@ vpnctl connect
 # Show current tunnel and last benchmark
 vpnctl status
 
+# Live TUI monitor (RTT, jitter, loss, download speed)
+vpnctl tui
+
 # Periodic watch mode (recommend only)
 vpnctl watch
 
@@ -54,6 +57,13 @@ vpnctl watch --apply
 
 # Disconnect whatever is active
 vpnctl disconnect
+
+# Split-tunnel management
+vpnctl split-tunnel list
+vpnctl split-tunnel add 192.168.1.0/24
+vpnctl split-tunnel remove 192.168.1.0/24
+vpnctl split-tunnel enable
+vpnctl split-tunnel disable
 
 # Bootstrap a VPS WireGuard node over SSH without connecting to it yet
 vpnctl bootstrap-wireguard-vps \
@@ -132,6 +142,40 @@ vpnctl disconnect
 If you are pasting commands directly into interactive `zsh`, avoid lines that
 start with `#` unless you have enabled `setopt interactivecomments`.
 
+## TUI monitor
+
+`vpnctl tui` opens a live terminal dashboard powered by Rich that shows:
+- Per-provider connection status
+- RTT, jitter, packet loss, and download speed
+- Rolling sparkline history
+- Current split-tunnel configuration
+
+The probe loop runs in a background thread and the display refreshes every
+0.5 s. Press `Ctrl-C` to quit.
+
+---
+
+## Split tunnelling
+
+`vpnctl split-tunnel` manages per-CIDR exclusions so selected traffic bypasses
+the VPN tunnel. Two strategies are used automatically:
+
+- **WARP (MASQUE / WireGuard)** — uses `warp-cli split-tunnel` so the WARP
+  daemon owns routing; no OS route table changes.
+- **wireguard-custom** — punches static host routes for excluded CIDRs back
+  via the original gateway after `wg-quick` installs its default route.
+
+Both strategies read the same `[split_tunnel].excludes` list from
+`~/.config/vpnctl/config.toml`.
+
+```bash
+vpnctl split-tunnel list
+vpnctl split-tunnel add 10.0.0.0/8
+vpnctl split-tunnel enable
+```
+
+---
+
 ## Docker smoke test
 
 `vpnctl docker-smoke-test` starts the configured `wireguard-custom` tunnel
@@ -147,17 +191,21 @@ client path.
 
 ```
 vpnctl/
-├── cli.py          — Click entry-point, all user-facing commands
-├── config.py       — TOML config loader + schema defaults
-├── probe.py        — Probe engine: RTT, jitter, loss, throughput, scoring
-├── bootstrap.py    — Safe VPS bootstrap over SSH for self-hosted WireGuard
-├── selector.py     — Ranks providers, enforces policy, picks winner
-├── watch.py        — Periodic background loop (probe + full benchmark)
+├── cli.py             — Click entry-point, all user-facing commands
+├── config.py          — TOML config loader + schema defaults
+├── probe.py           — Probe engine: RTT, jitter, loss, throughput, scoring
+├── bootstrap.py       — Safe VPS bootstrap over SSH for self-hosted WireGuard
+├── selector.py        — Ranks providers, enforces policy, picks winner
+├── watch.py           — Periodic background loop (probe + full benchmark)
+├── tui.py             — Live Rich TUI monitor with rolling sparkline history
+├── split_tunnel.py    — macOS split-tunnel helpers (WARP native + route-based)
+├── docker_smoke.py    — Docker-isolated WireGuard smoke test runner
+├── toml_utils.py      — TOML writer shim (tomli-w with minimal fallback)
 └── providers/
-    ├── base.py          — Abstract ProviderAdapter contract
-    ├── warp_masque.py   — WARP MASQUE adapter
-    ├── warp_wireguard.py— WARP WireGuard adapter
-    └── wg_custom.py     — Self-hosted WireGuard adapter
+    ├── base.py            — Abstract ProviderAdapter contract
+    ├── warp_masque.py     — WARP MASQUE adapter
+    ├── warp_wireguard.py  — WARP WireGuard adapter
+    └── wg_custom.py       — Self-hosted WireGuard adapter
 ```
 
 Every provider implements the same five-method contract:

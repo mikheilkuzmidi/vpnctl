@@ -14,10 +14,11 @@ env/
 .venv
 
 # Local data & secrets — never commit
-~/.config/vpnctl/
+# Note: ~/.config/vpnctl/ lives outside the repo and is never tracked
 *.log
 vps.pem
 *.pem
+*.key
 setup_server.sh
 
 # macOS
@@ -39,3 +40,9 @@ htmlcov/
 
 # hatch
 .hatch/
+
+# mypy
+.mypy_cache/
+
+# uv / pip
+*.lock
