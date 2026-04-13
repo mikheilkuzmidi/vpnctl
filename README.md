@@ -1,93 +1,120 @@
-# vpnctl — Zero-Cost VPN Selector for macOS
+# vpnctl — VPN Management Toolkit for macOS
 
-`vpnctl` benchmarks and connects to the fastest available free VPN tunnel from
-your MacBook.  The permanent free baseline is **Cloudflare WARP** in both
-`MASQUE` and `WireGuard` modes.  An optional self-hosted WireGuard endpoint can
-be added later without any code changes.
+`vpnctl` manages VPN tunnels from your Mac. The primary use-case is a
+self-hosted **Tailscale exit node** on a cloud VPS — one command sets it up
+from scratch. The free baseline of **Cloudflare WARP** and a legacy
+**WireGuard** path are also supported.
 
 ---
 
-## Requirements
+## Tailscale Exit Node — One-Command Setup
+
+This is the recommended, production-grade path. All traffic routes through
+your own VPS, appearing to originate from its public IP.
+
+### Requirements
+
+| Tool | Install |
+|------|---------|
+| Python ≥ 3.11 | `brew install python` |
+| Tailscale (Mac) | `brew install --cask tailscale` |
+| SSH + SCP | pre-installed on macOS |
+
+### Install vpnctl
+
+```bash
+# editable dev install (recommended)
+pip install -e .
+```
+
+### Bootstrap a new VPS
+
+```bash
+vpnctl bootstrap-tailscale-exit-node \
+  --ssh-target ubuntu@YOUR_VPS_IP \
+  --identity-file ./LightsailDefaultKey-eu-central-1.pem \
+  --hostname frankfurt-exit \
+  --auth-key tskey-auth-XXXXXXXX        # optional but enables fully automated setup
+```
+
+Generate an auth key at https://login.tailscale.com/admin/settings/keys
+(use type **Reusable**, no expiry recommended for long-lived servers).
+
+**What this command does on the VPS:**
+- Installs Tailscale (idempotent — safe to re-run)
+- Enables IPv4 + IPv6 forwarding persistently via `sysctl`
+- Applies UDP GRO optimisation (`ethtool`) for maximum throughput
+- Starts Tailscale advertising itself as an exit node with `--accept-routes=false`
+
+**Without `--auth-key`:** the command prints a browser URL. Visit it, then
+approve the exit node in the Tailscale admin console.
+
+### Firewall rules (AWS Lightsail)
+
+In the Lightsail **Networking** tab:
+
+| Action | Protocol | Port | Source |
+|--------|----------|------|--------|
+| **Delete** | TCP | 80 | Any IPv4 + IPv6 |
+| **Keep** | TCP | 22 | Any IPv4 + IPv6 |
+| **Add** | UDP | **41641** | Any IPv4 + IPv6 |
+
+UDP 41641 enables direct peer connections. Without it traffic routes through
+Tailscale DERP relays (~2× higher latency).
+
+### Approve the exit node
+
+1. Go to https://login.tailscale.com/admin/machines
+2. Find the new node → **Edit route settings** → enable **Use as exit node**
+
+### Activate on the Mac
+
+```bash
+tailscale set --exit-node=<TAILSCALE_IP>
+```
+
+### Verify
+
+```bash
+curl https://ifconfig.me             # must show VPS public IP
+tailscale ping <TAILSCALE_IP>        # must say "via <IP>:41641" (not DERP)
+```
+
+---
+
+## Cloudflare WARP (Free Baseline)
+
+### Requirements
 
 | Tool | Install |
 |------|---------|
 | Python ≥ 3.11 | `brew install python` |
 | Cloudflare WARP | `brew install --cask cloudflare-warp` |
-| wireguard-tools *(optional)* | `brew install wireguard-tools` |
 
-Run `vpnctl doctor` after installation — it explains every missing piece.
-
----
-
-## Install
+### Quick start
 
 ```bash
-python3 -m pip install --user .
-# or, for editable dev mode:
-python3 -m pip install --user -e .
+vpnctl doctor       # check all dependencies
+vpnctl benchmark    # measure + rank all enabled providers
+vpnctl connect      # connect top-ranked provider
+vpnctl status       # show current tunnel + last benchmark
+vpnctl tui          # live RTT / jitter / loss / speed monitor
+vpnctl watch        # periodic probe loop (recommend only)
+vpnctl watch --apply  # periodic probe loop (auto-switch)
+vpnctl disconnect   # tear down active tunnel
 ```
 
-After install the `vpnctl` binary is on your PATH.
+### Configuration
 
----
-
-## Quick start
-
-```bash
-# Check dependencies
-vpnctl doctor
-
-# Benchmark all enabled providers and store result
-vpnctl benchmark
-
-# Connect to the top-ranked provider
-vpnctl connect
-
-# Show current tunnel and last benchmark
-vpnctl status
-
-# Live TUI monitor (RTT, jitter, loss, download speed)
-vpnctl tui
-
-# Periodic watch mode (recommend only)
-vpnctl watch
-
-# Periodic watch mode (auto-apply reconnects)
-vpnctl watch --apply
-
-# Disconnect whatever is active
-vpnctl disconnect
-
-# Split-tunnel management
-vpnctl split-tunnel list
-vpnctl split-tunnel add 192.168.1.0/24
-vpnctl split-tunnel remove 192.168.1.0/24
-vpnctl split-tunnel enable
-vpnctl split-tunnel disable
-
-# Bootstrap a VPS WireGuard node over SSH without connecting to it yet
-vpnctl bootstrap-wireguard-vps \
-  --ssh-target ubuntu@203.0.113.10 \
-  --identity-file ./vps.pem
-
-# Validate the VPS tunnel inside Docker without touching host routing
-vpnctl docker-smoke-test
-```
-
----
-
-## Configuration
-
-Config lives at `~/.config/vpnctl/config.toml`.  A default file is written on
-first run.  All settings are documented inline.
+Config lives at `~/.config/vpnctl/config.toml` (written on first run):
 
 ```toml
 [policy]
-probe_interval_minutes   = 10   # light RTT probe on active tunnel
-benchmark_interval_minutes = 30 # full cross-provider benchmark
-consecutive_rounds_to_act  = 2  # rounds an alternative must win before action
-min_rtt_improvement_ms     = 15 # min median-RTT gain to consider switching
-min_score_improvement_pct  = 20 # min total-score gain to consider switching
+probe_interval_minutes     = 10
+benchmark_interval_minutes = 30
+consecutive_rounds_to_act  = 2
+min_rtt_improvement_ms     = 15.0
+min_score_improvement_pct  = 20.0
 
 [providers.warp-masque]
 enabled = true
@@ -97,76 +124,9 @@ enabled = true
 
 [providers.wireguard-custom]
 enabled = false
-# endpoint = "203.0.113.1:51820"
-# public_key = "..."
-# interface = "wgcustom"
-# key_file = "~/.config/vpnctl/wg-custom.key"  # chmod 600, never committed
 ```
 
----
-
-## Adding a self-hosted WireGuard endpoint
-
-Fast path:
-
-```bash
-vpnctl bootstrap-wireguard-vps \
-  --ssh-target ubuntu@YOUR_VPS_HOST \
-  --identity-file ./vps.pem
-```
-
-This will:
-- generate or reuse `~/.config/vpnctl/wg-custom.key`
-- upload and run `setup_server.sh` on the VPS
-- enable `[providers.wireguard-custom]` in `~/.config/vpnctl/config.toml`
-
-Then run:
-
-```bash
-vpnctl doctor
-vpnctl benchmark
-vpnctl connect wireguard-custom
-```
-
-Manual verification without shell comments:
-
-```bash
-vpnctl doctor
-vpnctl connect wireguard-custom
-vpnctl status
-sudo wg show
-curl -4 https://ifconfig.me
-vpnctl disconnect
-```
-
-If you are pasting commands directly into interactive `zsh`, avoid lines that
-start with `#` unless you have enabled `setopt interactivecomments`.
-
-## TUI monitor
-
-`vpnctl tui` opens a live terminal dashboard powered by Rich that shows:
-- Per-provider connection status
-- RTT, jitter, packet loss, and download speed
-- Rolling sparkline history
-- Current split-tunnel configuration
-
-The probe loop runs in a background thread and the display refreshes every
-0.5 s. Press `Ctrl-C` to quit.
-
----
-
-## Split tunnelling
-
-`vpnctl split-tunnel` manages per-CIDR exclusions so selected traffic bypasses
-the VPN tunnel. Two strategies are used automatically:
-
-- **WARP (MASQUE / WireGuard)** — uses `warp-cli split-tunnel` so the WARP
-  daemon owns routing; no OS route table changes.
-- **wireguard-custom** — punches static host routes for excluded CIDRs back
-  via the original gateway after `wg-quick` installs its default route.
-
-Both strategies read the same `[split_tunnel].excludes` list from
-`~/.config/vpnctl/config.toml`.
+### Split tunnelling
 
 ```bash
 vpnctl split-tunnel list
@@ -174,40 +134,52 @@ vpnctl split-tunnel add 10.0.0.0/8
 vpnctl split-tunnel enable
 ```
 
+CIDRs in the exclusion list bypass the VPN and go via your normal internet
+connection. Works for both WARP and wireguard-custom providers.
+
 ---
 
-## Docker smoke test
+## Self-Hosted WireGuard (Legacy)
 
-`vpnctl docker-smoke-test` starts the configured `wireguard-custom` tunnel
-inside an isolated Docker container. This verifies the VPS endpoint, keys,
-and WireGuard handshake path without changing the Mac's routes or interfaces.
+```bash
+vpnctl bootstrap-wireguard-vps \
+  --ssh-target ubuntu@YOUR_VPS_IP \
+  --identity-file ./vps.pem
 
-It is a server-side validation tool, not a replacement for the native macOS
-client path.
+vpnctl doctor
+vpnctl connect wireguard-custom
+curl -4 https://ifconfig.me
+```
+
+For smoke-testing the WireGuard tunnel inside Docker without touching host
+routing:
+
+```bash
+vpnctl docker-smoke-test
+```
 
 ---
 
 ## Architecture
 
 ```
-vpnctl/
-├── cli.py             — Click entry-point, all user-facing commands
-├── config.py          — TOML config loader + schema defaults
-├── probe.py           — Probe engine: RTT, jitter, loss, throughput, scoring
-├── bootstrap.py       — Safe VPS bootstrap over SSH for self-hosted WireGuard
-├── selector.py        — Ranks providers, enforces policy, picks winner
-├── watch.py           — Periodic background loop (probe + full benchmark)
-├── tui.py             — Live Rich TUI monitor with rolling sparkline history
-├── split_tunnel.py    — macOS split-tunnel helpers (WARP native + route-based)
-├── docker_smoke.py    — Docker-isolated WireGuard smoke test runner
-├── toml_utils.py      — TOML writer shim (tomli-w with minimal fallback)
+src/vpnctl/
+├── cli.py                  — Click entry-point, all user-facing commands
+├── tailscale_bootstrap.py  — Tailscale exit-node VPS provisioning over SSH
+├── bootstrap.py            — WireGuard VPS provisioning over SSH
+├── config.py               — TOML config loader + schema defaults
+├── probe.py                — RTT, jitter, loss, throughput, scoring
+├── selector.py             — Ranks providers, enforces policy, picks winner
+├── watch.py                — Periodic background loop
+├── tui.py                  — Live Rich TUI monitor
+├── split_tunnel.py         — macOS split-tunnel helpers
+├── docker_smoke.py         — Docker-isolated WireGuard smoke test
+├── toml_utils.py           — TOML writer shim
 └── providers/
-    ├── base.py            — Abstract ProviderAdapter contract
-    ├── warp_masque.py     — WARP MASQUE adapter
-    ├── warp_wireguard.py  — WARP WireGuard adapter
-    └── wg_custom.py       — Self-hosted WireGuard adapter
-```
+    ├── base.py             — Abstract ProviderAdapter contract
+    ├── warp_masque.py      — WARP MASQUE adapter
+    ├── warp_wireguard.py   — WARP WireGuard adapter
+    └── wg_custom.py        — Self-hosted WireGuard adapter
 
-Every provider implements the same five-method contract:
-`prepare() → connect() → disconnect() → status() → probe()`.
-The selector and watch loop are provider-agnostic.
+setup_tailscale_exit_node.sh  — VPS-side Tailscale setup script
+```

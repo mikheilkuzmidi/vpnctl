@@ -21,6 +21,7 @@ from rich.console import Console
 from rich.table import Table
 
 from vpnctl.bootstrap import bootstrap_wireguard_vps
+from vpnctl.tailscale_bootstrap import bootstrap_tailscale_exit_node
 from vpnctl.config import config_path, load_config
 from vpnctl.docker_smoke import run_docker_smoke
 from vpnctl.providers.base import ProviderStatus
@@ -370,6 +371,101 @@ def bootstrap_wireguard_vps_cmd(
         "  1. vpnctl doctor\n"
         "  2. vpnctl benchmark\n"
         "  3. vpnctl connect wireguard-custom"
+    )
+
+
+@main.command("bootstrap-tailscale-exit-node")
+@click.option(
+    "--ssh-target",
+    required=True,
+    help="SSH target for the VPS, e.g. ubuntu@203.0.113.10",
+)
+@click.option(
+    "--identity-file",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=str),
+    help="SSH private key, e.g. ./vps.pem",
+)
+@click.option(
+    "--hostname",
+    default="exit-node",
+    show_default=True,
+    help="Tailscale node hostname shown in the admin console.",
+)
+@click.option(
+    "--auth-key",
+    default="",
+    help=(
+        "Tailscale auth key for unattended setup. "
+        "Generate at https://login.tailscale.com/admin/settings/keys"
+    ),
+)
+def bootstrap_tailscale_exit_node_cmd(
+    ssh_target: str,
+    identity_file: str,
+    hostname: str,
+    auth_key: str,
+) -> None:
+    """Install Tailscale on a VPS and configure it as a pure exit node.
+
+    For fully-automated setup provide --auth-key (generate a reusable auth
+    key at https://login.tailscale.com/admin/settings/keys).
+
+    Without --auth-key the command prints a browser URL you must visit to
+    authenticate the node, after which you must approve it as an exit node
+    at https://login.tailscale.com/admin/machines.
+    """
+    console.print(
+        f"Bootstrapping [bold]{ssh_target}[/bold] as Tailscale exit node…"
+    )
+    try:
+        result = bootstrap_tailscale_exit_node(
+            ssh_target=ssh_target,
+            identity_file=identity_file,
+            hostname=hostname,
+            auth_key=auth_key,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.strip() if exc.stderr else "no stderr"
+        stdout = exc.stdout.strip() if exc.stdout else "no stdout"
+        err_console.print("Bootstrap failed.")
+        err_console.print(f"stdout: {stdout}")
+        err_console.print(f"stderr: {stderr}")
+        sys.exit(exc.returncode or 1)
+    except RuntimeError as exc:
+        err_console.print(str(exc))
+        sys.exit(1)
+
+    console.print("[green]✓[/green] Tailscale installed and configured on VPS.")
+
+    if result.auth_url:
+        console.print(
+            f"\n[bold yellow]Action required:[/bold yellow] "
+            f"Authenticate this node by visiting:\n\n  {result.auth_url}\n"
+        )
+        console.print(
+            "After authenticating, approve the exit node at:\n"
+            "  https://login.tailscale.com/admin/machines\n"
+            f"  → find [bold]{hostname}[/bold]\n"
+            "  → Edit route settings → Enable [bold]Use as exit node[/bold]"
+        )
+    else:
+        console.print(f"Tailscale IP: [bold]{result.tailscale_ip}[/bold]")
+        console.print(
+            f"\n[bold yellow]Action required:[/bold yellow] "
+            "Approve the exit node at:\n"
+            "  https://login.tailscale.com/admin/machines\n"
+            f"  → find [bold]{hostname}[/bold]\n"
+            "  → Edit route settings → Enable [bold]Use as exit node[/bold]"
+        )
+
+    ts_ip = result.tailscale_ip or "<tailscale-ip>"
+    console.print(
+        f"\nTo use this exit node from your Mac:\n"
+        f"  tailscale set --exit-node={ts_ip}\n"
+        "To verify:\n"
+        "  curl https://ifconfig.me          # should show VPS public IP\n"
+        f"  tailscale ping {ts_ip}  # should say via <IP>:41641 (direct)"
     )
 
 
