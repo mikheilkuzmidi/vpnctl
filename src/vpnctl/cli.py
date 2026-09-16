@@ -25,7 +25,12 @@ from vpnctl.bootstrap import bootstrap_wireguard_vps
 from vpnctl.tailscale_bootstrap import bootstrap_tailscale_exit_node
 from vpnctl import menu
 from vpnctl.config import config_path, load_config
-from vpnctl.docker_smoke import NoHandshake, NotConfigured, run_docker_smoke
+from vpnctl.docker_smoke import (
+    SANDBOXABLE,
+    NoHandshake,
+    NotConfigured,
+    run_docker_smoke,
+)
 from vpnctl.providers.base import ProviderStatus
 from vpnctl.selector import (
     build_providers,
@@ -300,23 +305,30 @@ def disconnect() -> None:
 
 @main.command("docker-smoke-test")
 @click.option(
+    "--provider",
+    type=click.Choice(SANDBOXABLE),
+    default="warp-wireguard",
+    show_default=True,
+    help="Which tunnel to bring up inside the container.",
+)
+@click.option(
     "--rebuild",
     is_flag=True,
     default=False,
     help="Rebuild the Docker smoke-test image before running it.",
 )
-def docker_smoke_test(rebuild: bool) -> None:
+def docker_smoke_test(provider: str, rebuild: bool) -> None:
     """Validate wireguard-custom inside Docker without touching host routing."""
     cfg = load_config()
     console.print(
-        "[bold]Running Docker WireGuard smoke test…[/bold] "
+        f"[bold]Testing {provider} inside Docker…[/bold] "
         "[dim](this machine keeps its own default route throughout)[/dim]"
     )
     # The first run builds an Ubuntu image, which is the slow part and looks
     # like a hang without saying so.
     with console.status("[dim]preparing the container…[/dim]", spinner="dots"):
         try:
-            result = run_docker_smoke(cfg, rebuild=rebuild)
+            result = run_docker_smoke(cfg, provider_id=provider, rebuild=rebuild)
         except NotConfigured as exc:
             err_console.print(f"[yellow]{exc}[/yellow]")
             sys.exit(2)
@@ -327,8 +339,15 @@ def docker_smoke_test(rebuild: bool) -> None:
             err_console.print(str(exc))
             sys.exit(1)
 
-    console.print(f"[green]✓[/green] Tunnel works. Container egress IP: {result.public_ip}")
-    console.print("[dim]  That is the VPS, so traffic inside the tunnel really is leaving there.[/dim]")
+    console.print(f"[green]✓[/green] {provider} works.")
+    console.print(f"  egress without the tunnel  [dim]{result.baseline_ip}[/dim]")
+    console.print(f"  egress through the tunnel  [bold]{result.public_ip}[/bold]")
+    if result.warp:
+        console.print(f"  Cloudflare reports WARP    [bold]{result.warp}[/bold]")
+    console.print(
+        "  DNS inside the tunnel      "
+        + ("[green]resolves[/green]" if result.dns_ok else "[red]does not resolve[/red]")
+    )
 
 
 @main.command("bootstrap-wireguard-vps")
@@ -664,8 +683,8 @@ _MENU: list[tuple[str, str, str]] = [
     ("Show status", "status", "Current tunnel and the last benchmark result"),
     ("Split tunnel", "split-tunnel-list", "The CIDRs that bypass the tunnel"),
     ("Disconnect", "disconnect", "Tear down any active tunnel"),
-    ("Test the tunnel in a sandbox", "docker-smoke-test",
-     "Brings the self-hosted tunnel up inside Docker, leaving this machine alone"),
+    ("Test a tunnel in a sandbox", "docker-smoke-test",
+     "Brings a tunnel up inside Docker to prove it works, leaving this machine alone"),
     ("Exit", "exit", ""),
 ]
 

@@ -45,7 +45,40 @@ if [ "$handshake" -eq 0 ]; then
 fi
 
 echo "[smoke] handshake ok"
-PUBLIC_IP="$(curl -4fsS --max-time 20 https://ifconfig.me)"
+
+# Ask over an IP literal, not a hostname.
+#
+# AllowedIPs is 0.0.0.0/0, so DNS goes into the tunnel too, and the container's
+# resolver does not. Resolving a name here made the check fail for a reason
+# that has nothing to do with whether the tunnel carries traffic. 1.1.1.1
+# serves a valid certificate for its own address, and its trace endpoint
+# reports the egress address and, usefully, whether Cloudflare sees the
+# request arriving over WARP.
+TRACE="$(curl -4fsS --max-time 25 https://1.1.1.1/cdn-cgi/trace || true)"
+if [ -z "$TRACE" ]; then
+  echo "NO_EGRESS=1"
+  echo "[smoke] handshake succeeded but no traffic came back through the tunnel." >&2
+  exit 4
+fi
+
+PUBLIC_IP="$(printf '%s\n' "$TRACE" | awk -F= '$1 == "ip" { print $2 }')"
 echo "PUBLIC_IP=${PUBLIC_IP}"
+printf '%s\n' "$TRACE" | awk -F= '$1 == "warp" { print "WARP=" $2 }'
+printf '%s\n' "$TRACE" | awk -F= '$1 == "loc"  { print "LOC="  $2 }'
+
+# DNS is a separate question, and the one that leaks. wg-quick's DNS= needs
+# resolvconf or systemd-resolved, neither of which works in a container, so
+# point the resolver at the tunnel's own server and check a name resolves
+# through it.
+echo "[smoke] dns"
+if [ -n "${SMOKE_DNS:-}" ]; then
+  printf 'nameserver %s\n' "$SMOKE_DNS" > /etc/resolv.conf 2>/dev/null || true
+fi
+if getent hosts one.one.one.one >/dev/null 2>&1; then
+  echo "DNS=ok"
+else
+  echo "DNS=failed"
+fi
+
 echo "[smoke] ping"
 ping -c 3 1.1.1.1

@@ -54,6 +54,9 @@ class WgCustomAdapter(ProviderAdapter):
         dns: str = "1.1.1.1",
         allowed_ips: str = "0.0.0.0/0",
         excludes: list[str] | None = None,
+        provider_id: str = _PROVIDER_ID,
+        mtu: Optional[int] = None,
+        private_key: Optional[str] = None,
     ) -> None:
         self._endpoint = endpoint
         self._public_key = public_key
@@ -65,37 +68,59 @@ class WgCustomAdapter(ProviderAdapter):
         self._excludes: list[str] = excludes or []
         self._tmp_conf: Optional[Path] = None
         self._pre_vpn_gateway: Optional[str] = None
+        # Everything below here is what lets a hosted provider reuse this
+        # class rather than restate the whole wg-quick lifecycle: the only
+        # differences are where the parameters come from, what the tunnel is
+        # called, and whether an MTU has to be pinned.
+        self._provider_id = provider_id
+        self._mtu = mtu
+        self._private_key = private_key
+        # True when the tunnel is described in the user's config file, false
+        # when a subclass fetches it from a provider. Decides which of the
+        # doctor checks below can say anything useful.
+        self._self_configured = private_key is None
 
     @property
     def provider_id(self) -> str:
-        return _PROVIDER_ID
+        return self._provider_id
 
     def _read_private_key(self) -> str:
+        # A provider that obtains its key over the network holds it in memory
+        # rather than pointing at a file the user manages.
+        if self._private_key:
+            return self._private_key
         if self._key_file is None:
             raise RuntimeError(
-                "wireguard-custom: key_file not configured in "
+                f"{self._provider_id}: key_file not configured in "
                 "~/.config/vpnctl/config.toml"
             )
         if not self._key_file.exists():
             raise RuntimeError(
-                f"wireguard-custom: key_file not found: {self._key_file}"
+                f"{self._provider_id}: key_file not found: {self._key_file}"
             )
         mode = stat.S_IMODE(self._key_file.stat().st_mode)
         if mode & 0o077:
             raise RuntimeError(
-                f"wireguard-custom: key_file {self._key_file} has unsafe "
+                f"{self._provider_id}: key_file {self._key_file} has unsafe "
                 f"permissions ({oct(mode)}).  Run: chmod 600 {self._key_file}"
             )
         return self._key_file.read_text().strip()
 
-    def _build_conf(self, private_key: str) -> str:
+    @property
+    def dns(self) -> str:
+        """The resolver this tunnel should use, for callers that set it up."""
+        return self._dns
+
+    def _build_conf(self, private_key: str, *, with_dns: bool = True) -> str:
         conf = (
             "[Interface]\n"
             f"PrivateKey = {private_key}\n"
             f"Address = {self._address}\n"
         )
-        if self._dns:
+        if self._dns and with_dns:
             conf += f"DNS = {self._dns}\n"
+        if self._mtu:
+            conf += f"MTU = {self._mtu}\n"
         conf += (
             "\n"
             "[Peer]\n"
@@ -106,8 +131,16 @@ class WgCustomAdapter(ProviderAdapter):
         )
         return conf
 
-    def render_config(self) -> str:
-        return self._build_conf(self._read_private_key())
+    def render_config(self, *, with_dns: bool = True) -> str:
+        """The wg-quick config for this tunnel.
+
+        with_dns=False is for a container: wg-quick implements DNS= by
+        shelling out to resolvconf or resolvectl, and in a container neither
+        works, so the whole `wg-quick up` fails with "sd_bus_open_system: No
+        such file or directory" before the tunnel is ever established. The
+        caller sets the resolver itself instead, and checks it separately.
+        """
+        return self._build_conf(self._read_private_key(), with_dns=with_dns)
 
     def _write_tmp_conf(self) -> Path:
         conf = self.render_config()
@@ -238,7 +271,7 @@ class WgCustomAdapter(ProviderAdapter):
             time.sleep(_POLL_INTERVAL)
         self.disconnect()
         raise RuntimeError(
-            f"{_PROVIDER_ID}: timed out waiting for interface {self._interface}"
+            f"{self._provider_id}: timed out waiting for interface {self._interface}"
         )
 
     def disconnect(self) -> None:
@@ -282,7 +315,7 @@ class WgCustomAdapter(ProviderAdapter):
         return ProviderStatus.DISCONNECTED
 
     def probe(self, on_progress: Optional[ProgressFn] = None) -> ProbeResult:
-        return run_probe(_PROVIDER_ID, on_progress)
+        return run_probe(self._provider_id, on_progress)
 
     def doctor(self) -> DoctorResult:
         issues: list[str] = []
@@ -300,11 +333,23 @@ class WgCustomAdapter(ProviderAdapter):
                 "macOS assigns real utun devices dynamically."
             )
 
+        # The rest of these are about a tunnel the user describes in the
+        # config file. A subclass that obtains its parameters from a provider
+        # API has no endpoint or key_file to check and would otherwise be
+        # told to go and edit the self-hosted section of its config.
+        if not self._self_configured:
+            return DoctorResult(
+                provider_id=self._provider_id,
+                ok=len(issues) == 0,
+                issues=issues,
+                hints=hints,
+            )
+
         if not self._endpoint:
             issues.append("endpoint not configured")
             hints.append(
-                "Set endpoint = '1.2.3.4:51820' in "
-                "[providers.wireguard-custom] in ~/.config/vpnctl/config.toml"
+                f"Set endpoint = '1.2.3.4:51820' in "
+                f"[providers.{self._provider_id}] in ~/.config/vpnctl/config.toml"
             )
 
         if self._key_file:
@@ -324,12 +369,12 @@ class WgCustomAdapter(ProviderAdapter):
         else:
             issues.append("key_file not configured")
             hints.append(
-                "Set key_file = '~/.config/vpnctl/wg-custom.key' in "
-                "[providers.wireguard-custom] in ~/.config/vpnctl/config.toml"
+                f"Set key_file = '~/.config/vpnctl/wg-custom.key' in "
+                f"[providers.{self._provider_id}] in ~/.config/vpnctl/config.toml"
             )
 
         return DoctorResult(
-            provider_id=_PROVIDER_ID,
+            provider_id=self._provider_id,
             ok=len(issues) == 0,
             issues=issues,
             hints=hints,

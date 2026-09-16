@@ -1,117 +1,148 @@
-"""Cloudflare WARP adapter - WireGuard mode.
+"""Cloudflare WARP over plain WireGuard.
 
-Identical lifecycle to WarpMasqueAdapter but switches the protocol to
-`wireguard` before connecting, so both WARP modes appear as independent
-benchmark candidates.
+This is the provider that makes vpnctl work out of the box. WARP's free tier
+takes no account and no payment, and its device API hands out ordinary
+WireGuard parameters, so the tunnel is brought up by the same wg-quick that
+the self-hosted provider uses. Nothing has to be installed beyond
+wireguard-tools, and in particular not the Cloudflare desktop client, which
+on macOS is a cask that needs an admin password before it will even land on
+disk.
+
+That is why this adapter no longer drives warp-cli. The MASQUE provider still
+does, because MASQUE is Cloudflare's own transport and has no standard client.
+
+The lifecycle is entirely WgCustomAdapter's: the only thing added here is
+where the parameters come from. prepare() registers once, caches the device,
+and fills them in.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
-import shutil
-import subprocess
-import time
+from vpnctl import warp
+from vpnctl.providers.base import DoctorResult
+from vpnctl.providers.wg_custom import WgCustomAdapter
 
-from vpnctl.providers.base import (
-    DoctorResult,
-    ProgressFn,
-    ProbeResult,
-    ProviderAdapter,
-    ProviderStatus,
-)
-from vpnctl.probe import run_probe
-from vpnctl.split_tunnel import apply_warp_excludes, remove_warp_excludes
-
-_WARP_CLI = "warp-cli"
-_PROTO = "WireGuard"
 _PROVIDER_ID = "warp-wireguard"
 
-_CONNECT_TIMEOUT = 20
-_POLL_INTERVAL = 0.5
+# A stable alias rather than a utun name, because macOS assigns the real
+# device dynamically and the name is what status() has to find again.
+_INTERFACE = "warpwg"
+
+# 1.1.1.1 is WARP's own resolver and sits inside the tunnel, so DNS does not
+# leak to whatever the local network handed out.
+_DNS = "1.1.1.1"
 
 
-def _run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [_WARP_CLI, *args],
-        capture_output=True,
-        text=True,
-        check=check,
-    )
+class WarpWireguardAdapter(WgCustomAdapter):
+    """Free Cloudflare WARP, registered anonymously, run over wg-quick."""
 
+    def __init__(
+        self,
+        excludes: list[str] | None = None,
+        device_path: Optional[Path] = None,
+    ) -> None:
+        super().__init__(
+            endpoint="",
+            public_key="",
+            interface=_INTERFACE,
+            key_file=None,
+            address="",
+            dns=_DNS,
+            allowed_ips="0.0.0.0/0",
+            excludes=excludes,
+            provider_id=_PROVIDER_ID,
+            mtu=warp.WARP_MTU,
+        )
+        # The parameters arrive from Cloudflare, not from the config file, so
+        # the inherited config-file checks do not apply.
+        self._self_configured = False
+        self._device_path = device_path
+        self._device: Optional[warp.WarpDevice] = None
 
-class WarpWireguardAdapter(ProviderAdapter):
-    def __init__(self, excludes: list[str] | None = None) -> None:
-        self._excludes: list[str] = excludes or []
+    def _apply(self, device: warp.WarpDevice) -> None:
+        self._device = device
+        self._private_key = device.private_key
+        self._public_key = device.peer_public_key
+        self._endpoint = device.endpoint()
+        self._address = device.interface_address()
 
-    @property
-    def provider_id(self) -> str:
-        return _PROVIDER_ID
+    def _load_cached(self) -> Optional[warp.WarpDevice]:
+        """Use an existing registration, without making one."""
+        device = warp.load(self._device_path)
+        if device is not None:
+            self._apply(device)
+        return device
 
     def prepare(self) -> None:
-        if not shutil.which(_WARP_CLI):
-            raise RuntimeError(
-                "warp-cli not found. Install Cloudflare WARP: "
-                "brew install --cask cloudflare-warp"
-            )
-        result = _run(["tunnel", "protocol", "set", _PROTO], check=False)
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"Failed to set WARP protocol to {_PROTO}: {result.stderr.strip()}"
-            )
+        """Register on first use, then check the tools are present.
 
-    def connect(self) -> None:
-        self.prepare()
-        _run(["connect"])
-        deadline = time.monotonic() + _CONNECT_TIMEOUT
-        while time.monotonic() < deadline:
-            if self.status() == ProviderStatus.CONNECTED:
-                apply_warp_excludes(self._excludes)
-                return
-            time.sleep(_POLL_INTERVAL)
-        raise RuntimeError(
-            f"{_PROVIDER_ID}: timed out waiting for connection "
-            f"({_CONNECT_TIMEOUT}s)"
-        )
+        Order matters: registering before the wg-quick check would make a
+        network call on a machine that cannot bring a tunnel up anyway. So
+        the keypair generation inside register() doubles as the check that wg
+        exists, and super().prepare() covers wg-quick.
+        """
+        if self._device is None:
+            self._apply(warp.load_or_register(self._device_path))
+        super().prepare()
 
     def disconnect(self) -> None:
-        if not shutil.which(_WARP_CLI):
-            return
-        remove_warp_excludes(self._excludes)
-        _run(["disconnect"], check=False)
+        """Tear down using the cached device, and do not register to do it.
 
-    def status(self) -> ProviderStatus:
-        if not shutil.which(_WARP_CLI):
-            return ProviderStatus.UNKNOWN
-        result = _run(["status"], check=False)
-        out = result.stdout.lower()
-        if "connected" in out and "disconnected" not in out:
-            return ProviderStatus.CONNECTED
-        if "connecting" in out:
-            return ProviderStatus.CONNECTING
-        if "disconnected" in out:
-            return ProviderStatus.DISCONNECTED
-        return ProviderStatus.UNKNOWN
-
-    def probe(self, on_progress: Optional[ProgressFn] = None) -> ProbeResult:
-        return run_probe(_PROVIDER_ID, on_progress)
+        disconnect has to work when nothing is connected, including before
+        the first registration. Reaching for the network here would turn
+        "there is nothing to tear down" into an API call.
+        """
+        if self._device is None:
+            try:
+                self._load_cached()
+            except warp.WarpError:
+                pass
+        super().disconnect()
 
     def doctor(self) -> DoctorResult:
-        issues: list[str] = []
-        hints: list[str] = []
-        if not shutil.which(_WARP_CLI):
-            issues.append("warp-cli not found")
-            hints.append("brew install --cask cloudflare-warp")
+        """Report readiness without registering anything.
+
+        A dependency check that silently created an account on a third party
+        service would be a surprising thing for `vpnctl doctor` to do.
+        """
+        try:
+            cached = self._load_cached()
+        except warp.WarpError as exc:
+            return DoctorResult(
+                provider_id=_PROVIDER_ID,
+                ok=False,
+                issues=[str(exc)],
+                hints=[f"rm {warp.device_path()}"],
+            )
+
+        result = super().doctor()
+        if cached is None:
+            result.hints.append(
+                "No WARP device registered yet. One is created automatically, "
+                "anonymously and for free, on the first connect."
+            )
         else:
-            result = _run(["settings"], check=False)
-            if result.returncode != 0:
-                issues.append(
-                    "warp-cli is present but returned an error - "
-                    "is WARP registered? Run: warp-cli registration new"
-                )
-        return DoctorResult(
-            provider_id=_PROVIDER_ID,
-            ok=len(issues) == 0,
-            issues=issues,
-            hints=hints,
-        )
+            result.hints.append(
+                f"WARP device registered, tunnel address {cached.address_v4}."
+            )
+
+        # WARP hands out an address in 172.16.0.0/12, so a split-tunnel
+        # exclusion covering that range would route the tunnel's own address
+        # back to the local gateway.
+        if cached is not None and any(
+            exclude.startswith("172.16.") or exclude == "172.16.0.0/12"
+            for exclude in self._excludes
+        ):
+            result.issues.append(
+                f"split tunnel excludes {', '.join(self._excludes)}, which "
+                f"covers WARP's own address {cached.address_v4}"
+            )
+            result.hints.append(
+                "Remove that exclusion: vpnctl split-tunnel remove 172.16.0.0/12"
+            )
+            result.ok = False
+
+        return result

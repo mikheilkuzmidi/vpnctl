@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from unittest.mock import patch
 
 from vpnctl import docker_smoke
 from vpnctl.config import load_config
@@ -47,6 +48,9 @@ def _fake_docker(monkeypatch, *, stdout: str, returncode: int = 0):
 
     monkeypatch.setattr(docker_smoke, "_run", fake_run)
     monkeypatch.setattr(docker_smoke, "_repo_root", lambda: Path("/repo"))
+    # No test may reach the network. Before this was pinned, one of these
+    # actually registered a device against Cloudflare's live API.
+    monkeypatch.setattr(docker_smoke, "_baseline_egress", lambda: "198.51.100.1")
     return calls
 
 
@@ -81,16 +85,18 @@ def test_a_silent_peer_is_not_reported_as_a_dns_error(tmp_path, monkeypatch):
     with pytest.raises(docker_smoke.NoHandshake) as exc:
         docker_smoke.run_docker_smoke(cfg)
     message = str(exc.value)
-    assert "203.0.113.10" in message
-    assert "51820" in message
-    assert "public key is a peer" in message
+    assert "never answered" in message
+    # Both explanations are given, because from here they are indistinguishable.
+    assert "blocking WireGuard" in message
+    assert "is down" in message
+    assert "Could not resolve host" not in message.split("output:")[0]
 
 
 def test_the_wrong_egress_ip_is_a_failure(tmp_path, monkeypatch):
     """A tunnel that carries traffic somewhere else is worse than no tunnel."""
     cfg = _cfg(tmp_path, monkeypatch)
     _fake_docker(monkeypatch, stdout="PUBLIC_IP=198.51.100.7\n")
-    with pytest.raises(RuntimeError, match="did not match"):
+    with pytest.raises(RuntimeError, match="not to your server"):
         docker_smoke.run_docker_smoke(cfg)
 
 
@@ -103,3 +109,49 @@ def test_the_container_gets_no_more_than_it_needs(tmp_path, monkeypatch):
     assert "--privileged" not in run
     assert not any(arg.startswith("--net") or arg.startswith("--network") for arg in run)
     assert "NET_ADMIN" in run
+
+
+def test_a_tunnel_that_does_not_change_the_egress_is_a_failure(tmp_path, monkeypatch):
+    """A handshake is not the same as carrying traffic."""
+    cfg = _cfg(tmp_path, monkeypatch)
+    _fake_docker(monkeypatch, stdout="PUBLIC_IP=198.51.100.1\n")
+    with pytest.raises(RuntimeError, match="still leaves from"):
+        docker_smoke.run_docker_smoke(cfg)
+
+
+def test_warp_is_verified_by_the_egress_changing(tmp_path, monkeypatch):
+    """A hosted provider has no predictable egress address, so compare."""
+    from vpnctl import warp
+
+    cfg = _cfg(tmp_path, monkeypatch)
+    device = tmp_path / "warp-device.json"
+    warp.save(
+        warp.WarpDevice(
+            device_id="d", token="t", private_key="A" * 43 + "=",
+            public_key="B" * 43 + "=", address_v4="172.16.0.2",
+            address_v6="::1", peer_public_key="C" * 43 + "=",
+            endpoint_host="engage.cloudflareclient.com:2408",
+            endpoint_v4="162.159.192.2:0", ports=[2408],
+        ),
+        device,
+    )
+    _fake_docker(monkeypatch, stdout="PUBLIC_IP=104.28.200.73\nWARP=on\nDNS=ok\n")
+    monkeypatch.setattr(
+        docker_smoke, "_adapter_for",
+        lambda cfg, pid: __import__(
+            "vpnctl.providers.warp_wireguard", fromlist=["WarpWireguardAdapter"]
+        ).WarpWireguardAdapter(device_path=device),
+    )
+    with patch("shutil.which", return_value="/opt/homebrew/bin/wg-quick"):
+        result = docker_smoke.run_docker_smoke(cfg, provider_id="warp-wireguard")
+
+    assert result.egress_changed
+    assert result.warp == "on"
+    assert result.dns_ok
+
+
+def test_an_unknown_provider_is_refused(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, monkeypatch)
+    _fake_docker(monkeypatch, stdout="")
+    with pytest.raises(docker_smoke.NotConfigured, match="warp-wireguard"):
+        docker_smoke.run_docker_smoke(cfg, provider_id="warp-masque")

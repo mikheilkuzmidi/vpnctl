@@ -20,16 +20,40 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
+
 from vpnctl.config import Config
+from vpnctl.providers.warp_wireguard import WarpWireguardAdapter
 from vpnctl.providers.wg_custom import WgCustomAdapter
 
 _IMAGE = "vpnctl/wg-smoke:local"
 
+# Asked over an IP literal so the answer does not depend on DNS, which is
+# exactly one of the things being tested.
+_TRACE_URL = "https://1.1.1.1/cdn-cgi/trace"
+
+# Every provider the sandbox can exercise. A provider qualifies by being a
+# WireGuard tunnel that can render a config: that is all the container needs.
+SANDBOXABLE = ("warp-wireguard", "wireguard-custom")
+
 
 @dataclass
 class DockerSmokeResult:
+    provider_id: str
     public_ip: str
+    baseline_ip: str
+    warp: str
+    dns_ok: bool
     output: str
+
+    @property
+    def egress_changed(self) -> bool:
+        """Whether traffic actually came out somewhere else.
+
+        The point of the whole exercise. A tunnel that hands shakes and then
+        egresses from the same address has not done anything.
+        """
+        return bool(self.public_ip) and self.public_ip != self.baseline_ip
 
 
 class NoHandshake(RuntimeError):
@@ -96,54 +120,96 @@ def _expected_public_ip(endpoint: str) -> str:
     return host or endpoint
 
 
+def _baseline_egress() -> str:
+    """This machine's egress address with no tunnel, for comparison.
+
+    The container shares the host's egress path, so measuring it here rather
+    than inside the container avoids a second image run.
+    """
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            body = client.get(_TRACE_URL).text
+    except httpx.HTTPError:
+        return ""
+    for line in body.splitlines():
+        key, _, value = line.partition("=")
+        if key == "ip":
+            return value.strip()
+    return ""
+
+
+def _adapter_for(cfg: Config, provider_id: str):
+    """The adapter whose config the container should run.
+
+    Anything that can render a WireGuard config can be tested this way, which
+    is why this returns the same adapters used for a real connection rather
+    than a sandbox-specific reimplementation of them.
+    """
+    if provider_id == "warp-wireguard":
+        return WarpWireguardAdapter()
+    if provider_id == "wireguard-custom":
+        return WgCustomAdapter(
+            endpoint=cfg.wg_custom.endpoint,
+            public_key=cfg.wg_custom.public_key,
+            interface="wgsmoke",
+            key_file=cfg.wg_custom.key_file,
+            address=cfg.wg_custom.address,
+            dns=cfg.wg_custom.dns,
+            allowed_ips=cfg.wg_custom.allowed_ips,
+            excludes=[],
+        )
+    raise NotConfigured(
+        f"{provider_id} cannot be tested in the sandbox. "
+        f"Choose one of: {', '.join(SANDBOXABLE)}"
+    )
+
+
 def run_docker_smoke(
     cfg: Config,
     *,
+    provider_id: str = "wireguard-custom",
     rebuild: bool = False,
 ) -> DockerSmokeResult:
-    """Run the configured self-hosted WireGuard client inside Docker."""
+    """Run one provider's WireGuard client inside Docker and check it works."""
     _require_docker()
 
-    # Deliberately not gated on cfg.wg_custom.enabled. That flag decides
-    # whether the provider is a candidate for connecting *this machine*, and
-    # wanting to check a tunnel in a container is not a reason to make it one.
-    # What the test does need is a tunnel actually described in the config.
-    missing = [
-        name
-        for name, value in (
-            ("endpoint", cfg.wg_custom.endpoint),
-            ("public_key", cfg.wg_custom.public_key),
-            ("key_file", cfg.wg_custom.key_file),
-            ("address", cfg.wg_custom.address),
-        )
-        if not value
-    ]
-    if missing:
-        raise NotConfigured(
-            "wireguard-custom has no "
-            + ", ".join(missing)
-            + " in the config, so there is no tunnel to test. "
-            "`vpnctl bootstrap-wireguard-vps` sets one up."
-        )
+    adapter = _adapter_for(cfg, provider_id)
 
-    adapter = WgCustomAdapter(
-        endpoint=cfg.wg_custom.endpoint,
-        public_key=cfg.wg_custom.public_key,
-        interface="wgsmoke",
-        key_file=cfg.wg_custom.key_file,
-        address=cfg.wg_custom.address,
-        dns="",
-        allowed_ips=cfg.wg_custom.allowed_ips,
-        excludes=[],
-    )
+    # Deliberately not gated on the provider's enabled flag. That flag decides
+    # whether a provider is a candidate for connecting *this machine*, and
+    # wanting to check a tunnel inside a container is not a reason to make it
+    # one. What the test does need is a tunnel it can actually describe.
+    if provider_id == "wireguard-custom":
+        missing = [
+            name
+            for name, value in (
+                ("endpoint", cfg.wg_custom.endpoint),
+                ("public_key", cfg.wg_custom.public_key),
+                ("key_file", cfg.wg_custom.key_file),
+                ("address", cfg.wg_custom.address),
+            )
+            if not value
+        ]
+        if missing:
+            raise NotConfigured(
+                "wireguard-custom has no "
+                + ", ".join(missing)
+                + " in the config, so there is no tunnel to test. "
+                "`vpnctl bootstrap-wireguard-vps` sets one up, or use "
+                "`--provider warp-wireguard` for the free hosted one."
+            )
+
     adapter.prepare()
+    baseline = _baseline_egress()
 
     repo_root = _repo_root()
     _ensure_image(repo_root, rebuild=rebuild)
 
     with tempfile.TemporaryDirectory(prefix="vpnctl-docker-") as tmpdir:
         conf_path = Path(tmpdir) / "wgsmoke.conf"
-        conf_path.write_text(adapter.render_config())
+        # Without with_dns=False, wg-quick tries resolvconf inside the
+        # container and the tunnel never comes up at all.
+        conf_path.write_text(adapter.render_config(with_dns=False))
         conf_path.chmod(0o600)
 
         run = _run(
@@ -155,6 +221,12 @@ def run_docker_smoke(
                 "NET_ADMIN",
                 "--device",
                 "/dev/net/tun",
+                "-e",
+                # The resolver to install inside the container once the
+                # tunnel is up, so DNS is checked rather than merely avoided.
+                # It is the provider's own, which is the one a real connection
+                # would use.
+                f"SMOKE_DNS={adapter.dns or '1.1.1.1'}",
                 "-v",
                 f"{tmpdir}:/config:ro",
                 _IMAGE,
@@ -163,35 +235,60 @@ def run_docker_smoke(
         )
 
     combined = (run.stdout or "") + (run.stderr or "")
+
     if "NO_HANDSHAKE=1" in combined:
         raise NoHandshake(
-            f"The tunnel came up, but {_expected_public_ip(cfg.wg_custom.endpoint)} "
-            "never answered the handshake.\n"
+            f"{provider_id}: the tunnel came up, but the peer never answered "
+            "the handshake.\n"
             "The interface, keys and routes are all fine: packets went out and "
-            "nothing came back.\n"
-            "Check that the server is running, that UDP "
-            f"{cfg.wg_custom.endpoint.rpartition(':')[2]} is open to you, and that "
-            "this client's public key is a peer on it.\n"
+            "nothing came back. That is what a network blocking WireGuard "
+            "looks like, and also what a server that is down looks like.\n"
             f"output:\n{combined}"
+        )
+    if "NO_EGRESS=1" in combined:
+        raise RuntimeError(
+            f"{provider_id}: handshake succeeded but no traffic came back "
+            f"through the tunnel.\noutput:\n{combined}"
         )
     if run.returncode != 0:
         raise RuntimeError(
-            "Docker smoke test failed.\n"
+            f"{provider_id}: sandbox test failed.\n"
             f"stdout:\n{run.stdout}\n"
             f"stderr:\n{run.stderr}"
         )
 
-    public_ip = ""
+    fields = {}
     for line in combined.splitlines():
-        if line.startswith("PUBLIC_IP="):
-            public_ip = line.split("=", 1)[1].strip()
-            break
+        key, sep, value = line.partition("=")
+        if sep and key in ("PUBLIC_IP", "WARP", "DNS", "LOC"):
+            fields[key] = value.strip()
 
-    expected = _expected_public_ip(cfg.wg_custom.endpoint)
-    if public_ip != expected:
+    result = DockerSmokeResult(
+        provider_id=provider_id,
+        public_ip=fields.get("PUBLIC_IP", ""),
+        baseline_ip=baseline,
+        warp=fields.get("WARP", ""),
+        dns_ok=fields.get("DNS") == "ok",
+        output=combined,
+    )
+
+    if not result.egress_changed and baseline:
         raise RuntimeError(
-            "Docker smoke test connected, but public IP did not match the VPS.\n"
-            f"expected={expected}\nactual={public_ip}\noutput:\n{combined}"
+            f"{provider_id}: the tunnel is up but traffic still leaves from "
+            f"{baseline}, so nothing is being carried through it.\n"
+            f"output:\n{combined}"
         )
 
-    return DockerSmokeResult(public_ip=public_ip, output=combined)
+    # A self-hosted tunnel has a checkable answer: traffic must come out of
+    # the machine it was sent to. A hosted provider does not, because it
+    # egresses from whichever of its own addresses it chooses.
+    if provider_id == "wireguard-custom":
+        expected = _expected_public_ip(cfg.wg_custom.endpoint)
+        if result.public_ip != expected:
+            raise RuntimeError(
+                "The tunnel carried traffic, but not to your server.\n"
+                f"expected={expected}\nactual={result.public_ip}\n"
+                f"output:\n{combined}"
+            )
+
+    return result
