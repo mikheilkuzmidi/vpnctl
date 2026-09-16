@@ -20,7 +20,8 @@ from typing import Optional
 import click
 from rich.console import Console
 
-from vpnctl import menu, warp
+from vpnctl import menu, riseup, warp
+from vpnctl.providers.riseup import find_openvpn
 from vpnctl.config import config_path, configure_wg_custom, set_provider_enabled
 
 _REQUIRED_TOOLS = ("wg", "wg-quick")
@@ -55,8 +56,8 @@ def _install_wireguard_tools(console: Console) -> bool:
     return not _missing_tools()
 
 
-def _ask_self_hosted(console: Console) -> Optional[bool]:
-    """True for their own server, False for the free providers, None to abort."""
+def _ask_provider(console: Console) -> Optional[str]:
+    """Which provider to set up: "warp", "riseup", "own", or None to abort."""
     # select() reads single keypresses, which only works with the terminal in
     # cbreak mode. Without this the arrows were line buffered and echoed, so
     # the menu did not respond to them at all.
@@ -66,20 +67,26 @@ def _ask_self_hosted(console: Console) -> Optional[bool]:
             "vpnctl setup",
             [
                 (
-                    "Use a free VPN, set up for me",
-                    "Registers an anonymous Cloudflare WARP device. "
-                    "No account, no payment.",
+                    "Free VPN, set up for me",
+                    "An anonymous Cloudflare WARP device. No account, no "
+                    "payment, unlimited. Fastest to set up.",
                 ),
                 (
-                    "I have my own WireGuard server",
-                    "Point vpnctl at your own endpoint and keys.",
+                    "Free VPN run by a nonprofit",
+                    "Riseup, over OpenVPN. No account either, and not one "
+                    "large company, but slower and sometimes busy.",
+                ),
+                (
+                    "My own WireGuard server",
+                    "Point vpnctl at your own endpoint and keys. The only "
+                    "option where nobody else carries your traffic.",
                 ),
             ],
             subtitle="nothing is sent anywhere until you choose",
         )
     if choice is None:
         return None
-    return choice == 1
+    return ("warp", "riseup", "own")[choice]
 
 
 def _configure_own_server(console: Console) -> bool:
@@ -144,6 +151,37 @@ def _configure_warp(console: Console) -> bool:
     return True
 
 
+def _configure_riseup(console: Console) -> bool:
+    """Fetch Riseup's gateway list and an anonymous client certificate."""
+    console.print(
+        "\n[bold]Fetching Riseup's configuration[/bold]\n"
+        "[dim]Riseup is a nonprofit. Its own API reports allow_anonymous and "
+        "allow_free, so there is nothing to sign up for: vpnctl asks for a "
+        "short-lived client certificate and caches it.[/dim]"
+    )
+    if find_openvpn() is None:
+        console.print(
+            "[yellow]Riseup speaks OpenVPN, which is not installed.[/yellow]\n"
+            "  brew install openvpn"
+        )
+        return False
+
+    try:
+        with console.status("[dim]fetching gateways…[/dim]", spinner="dots"):
+            bundle = riseup.load_or_fetch("riseup")
+    except riseup.RiseupError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return False
+
+    set_provider_enabled("riseup", True)
+    console.print(
+        f"[green]✓[/green] {len(bundle.gateways)} gateways cached "
+        f"({', '.join(bundle.locations())})."
+    )
+    console.print(f"[dim]  Cached at {riseup.bundle_path('riseup')} (0600).[/dim]")
+    return True
+
+
 def needs_setup() -> bool:
     """Whether this machine has been through setup yet."""
     return not config_path().exists()
@@ -158,7 +196,7 @@ def run_setup(console: Console) -> int:
     console.print("[green]✓[/green] wireguard-tools present.")
 
     try:
-        self_hosted = _ask_self_hosted(console)
+        choice = _ask_provider(console)
     except menu.NotATerminal:
         console.print(
             "Setup needs a terminal. Run `vpnctl setup` directly, or configure "
@@ -166,12 +204,16 @@ def run_setup(console: Console) -> int:
         )
         return 2
 
-    if self_hosted is None:
+    if choice is None:
         console.print("[dim]Nothing changed.[/dim]")
         return 0
 
-    ok = _configure_own_server(console) if self_hosted else _configure_warp(console)
-    if not ok:
+    configure = {
+        "warp": _configure_warp,
+        "riseup": _configure_riseup,
+        "own": _configure_own_server,
+    }[choice]
+    if not configure(console):
         return 1
 
     console.print(
@@ -180,6 +222,8 @@ def run_setup(console: Console) -> int:
         "without touching this machine's routing\n"
         "  [cyan]vpnctl connect[/cyan]            route this machine through it "
         "[dim](asks for your password: moving the default route needs root)[/dim]\n"
+        "  [cyan]vpnctl diagnose[/cyan]           if connecting fails, what this "
+        "network is actually blocking\n"
         "  [cyan]vpnctl[/cyan]                    the menu"
     )
     return 0

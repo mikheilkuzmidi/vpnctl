@@ -102,6 +102,19 @@ class WgCustomConfig:
 
 
 @dataclass
+class RiseupConfig:
+    """A free nonprofit LEAP provider, reached over OpenVPN."""
+
+    enabled: bool = False
+    provider: str = "riseup"
+    location: str = ""
+    # TCP by default: the networks worth having a free VPN on are the ones
+    # that treat UDP differently.
+    protocol: str = "tcp"
+    port: int = 1194
+
+
+@dataclass
 class TransportConfig:
     """How a tunnel's UDP gets to its server.
 
@@ -128,6 +141,7 @@ class Config:
     direct: WarpProviderConfig = field(default_factory=WarpProviderConfig)
     split_tunnel: SplitTunnelConfig = field(default_factory=SplitTunnelConfig)
     transport: TransportConfig = field(default_factory=TransportConfig)
+    riseup: RiseupConfig = field(default_factory=RiseupConfig)
 
 
 def config_path() -> Path:
@@ -204,6 +218,15 @@ def load_config() -> Config:
         allowed_ips=str(custom_raw.get("allowed_ips", "0.0.0.0/0")),
     )
 
+    riseup_raw = providers_raw.get("riseup", {})
+    riseup_cfg = RiseupConfig(
+        enabled=bool(riseup_raw.get("enabled", False)),
+        provider=str(riseup_raw.get("provider", "riseup")),
+        location=str(riseup_raw.get("location", "")),
+        protocol=str(riseup_raw.get("protocol", "tcp")),
+        port=int(riseup_raw.get("port", 1194)),
+    )
+
     tr_raw = raw.get("transport", {})
     transport = TransportConfig(
         kind=str(tr_raw.get("kind", "direct")),
@@ -229,6 +252,7 @@ def load_config() -> Config:
         wg_custom=wg_custom,
         split_tunnel=split_tunnel,
         transport=transport,
+        riseup=riseup_cfg,
     )
 
 

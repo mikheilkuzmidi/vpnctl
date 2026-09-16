@@ -12,12 +12,19 @@ arrow key cannot be mistyped the way a command name can.
 from __future__ import annotations
 
 import sys
+import textwrap
 from contextlib import contextmanager
 from typing import Optional
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
+
+# Hints are wrapped by hand rather than left to rich. A Text has no hanging
+# indent, so a hint long enough to wrap had its continuation lines start at
+# column zero, outside the panel's padding, which read as a broken border.
+_HINT_INDENT = "      "
+_HINT_WIDTH = 72
 
 UP = "up"
 DOWN = "down"
@@ -101,8 +108,8 @@ def select(
             body.append("  ")
             body.append("> " if selected else "  ", style="cyan" if selected else "")
             body.append(label + "\n", style="bold" if selected else "")
-            if hint:
-                body.append(f"      {hint}\n", style="dim")
+            for line in textwrap.wrap(hint, width=_HINT_WIDTH) if hint else []:
+                body.append(f"{_HINT_INDENT}{line}\n", style="dim")
         body.append("\n  up and down to move, enter to choose, q to quit", style="dim")
         # expand=False so the box hugs the longest hint rather than stretching
         # across a wide terminal, which left the entries marooned on the left.

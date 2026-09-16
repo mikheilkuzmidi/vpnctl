@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "vpnctl"
 version = "0.1.0"
-description = "Zero-cost VPN selector and benchmark tool for macOS"
+description = "A macOS VPN client that works with no account, no payment and no server of your own"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

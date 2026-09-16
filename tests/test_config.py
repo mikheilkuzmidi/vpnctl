@@ -121,3 +121,25 @@ def test_configure_wg_custom_updates_file(tmp_path, monkeypatch):
     assert cfg.wg_custom.address == "10.8.0.2/32"
     assert cfg.wg_custom.interface == "wgcustom"
     assert cfg.wg_custom.allowed_ips == "0.0.0.0/0"
+
+
+def test_probe_can_be_imported_first(tmp_path):
+    """vpnctl.probe must not need a provider to have been imported already.
+
+    providers/__init__ used to import every adapter, and every adapter
+    imports run_probe from vpnctl.probe, so importing probe first walked
+    probe -> providers -> warp_masque -> probe and died on a partially
+    initialised module. It passed only because some other import usually got
+    there first, which made it a bug that hid from the test suite.
+    """
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import vpnctl.probe; print(vpnctl.probe.run_probe)"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "run_probe" in result.stdout

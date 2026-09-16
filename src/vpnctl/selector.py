@@ -16,6 +16,7 @@ from vpnctl.config import Config, results_path
 from vpnctl.transports import WstunnelSettings, build_transport
 from vpnctl.providers.base import ProbeResult, ProviderAdapter
 from vpnctl.providers.direct import DirectAdapter
+from vpnctl.providers.riseup import RiseupAdapter
 from vpnctl.providers.warp_masque import WarpMasqueAdapter
 from vpnctl.providers.warp_wireguard import WarpWireguardAdapter
 from vpnctl.providers.wg_custom import WgCustomAdapter
@@ -57,6 +58,15 @@ def build_providers(cfg: Config) -> list[ProviderAdapter]:
                 allowed_ips=cfg.wg_custom.allowed_ips,
                 excludes=excludes,
                 transport=build_transport(cfg.transport.kind, transport_settings),
+            )
+        )
+    if cfg.riseup.enabled:
+        providers.append(
+            RiseupAdapter(
+                cfg.riseup.provider,
+                location=cfg.riseup.location,
+                protocol=cfg.riseup.protocol,
+                port=cfg.riseup.port,
             )
         )
     if cfg.direct.enabled:
