@@ -23,6 +23,51 @@ from typing import Iterable, Optional, Sequence, Union
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
+from rich.theme import Theme
+
+# One palette, named by meaning rather than by colour.
+#
+# Before this the same idea was spelled differently on every screen: a good
+# value was "green" here and "bold green" there, a heading was "bold" or
+# "bold cyan" depending on the file, and "dim" did duty for labels, hints,
+# absent values and whole paragraphs. Naming them means a screen asks for
+# "ok" and gets whatever ok looks like, and changing what it looks like is
+# one edit.
+#
+# Cyan is the accent throughout, because it is the one colour the terminal
+# chrome and the key hints already shared.
+THEME = Theme(
+    {
+        "ok": "green",
+        "warn": "yellow",
+        "bad": "red",
+        "accent": "cyan",
+        "key": "bold cyan",      # a keyboard key in a footer
+        "label": "dim",          # the left column of a key/value block
+        "muted": "dim",          # prose that is not the point
+        "absent": "dim",         # a value that is not there yet
+        "heading": "bold",
+        "selected": "bold",
+        "rule": "dim",
+        "spark.rtt": "green",
+        "spark.down": "cyan",
+    }
+)
+
+
+def console() -> Console:
+    """A console using the palette. Every screen should draw on one of these."""
+    return Console(theme=THEME)
+
+
+def error_console() -> Console:
+    """The same, on stderr.
+
+    No base style: rich applies one underneath markup, so a base of
+    "bold red" made every [warn] message render red and a warning
+    indistinguishable from a failure.
+    """
+    return Console(stderr=True, theme=THEME)
 
 # Below this the two-pane menu has nowhere to put its detail column, and
 # key/value blocks stop lining up usefully. Both fall back to one column.
@@ -39,15 +84,15 @@ def header(console: Console, title: str, status: Optional[str] = None) -> None:
     every screen rather than hunting for it in prose.
     """
     line = Text()
-    line.append(title, style="bold")
+    line.append(title, style="heading")
     if status and console.width > NARROW:
         pad = console.width - len(title) - len(status)
         if pad > GUTTER:
             line.append(" " * pad)
-            line.append(status, style="dim")
+            line.append(status, style="muted")
     elif status:
         line.append("  ")
-        line.append(status, style="dim")
+        line.append(status, style="muted")
     console.print(line)
     console.print()
 
@@ -70,7 +115,7 @@ def rows(
         return
     width = max(len(key) for key, _ in pairs)
     table = Table(box=None, show_header=False, pad_edge=False, padding=(0, 0))
-    table.add_column("key", style="dim", width=indent + width + GUTTER)
+    table.add_column("key", style="label", width=indent + width + GUTTER)
     table.add_column("value", overflow="fold")
     for key, value in pairs:
         table.add_row(" " * indent + key.ljust(width + GUTTER), value)
@@ -83,8 +128,8 @@ def keys(console: Console, bindings: Iterable[tuple[str, str]]) -> None:
     for index, (key, what) in enumerate(bindings):
         if index:
             line.append("   ")
-        line.append(key, style="bold cyan")
-        line.append(f" {what}", style="dim")
+        line.append(key, style="key")
+        line.append(f" {what}", style="muted")
     console.print()
     console.print(line)
 
@@ -92,4 +137,4 @@ def keys(console: Console, bindings: Iterable[tuple[str, str]]) -> None:
 def verdict(console: Console, message: str, *, ok: bool = True) -> None:
     """The one-line conclusion a screen ends on."""
     console.print()
-    console.print(f"[{'green' if ok else 'yellow'}]{message}[/]")
+    console.print(message, style="ok" if ok else "warn")

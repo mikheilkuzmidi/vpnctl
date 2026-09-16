@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from vpnctl import render
 from vpnctl.tui import _SPARKS, _fmt, _fmt_throughput, _sparkline
 
 
@@ -119,16 +120,14 @@ def _render(width: int, height: int, providers=(), excludes=()):
     cfg = Config(split_tunnel=SplitTunnelConfig(enabled=bool(excludes), excludes=list(excludes)))
     state = _state_with_history()
 
-    import vpnctl.tui as tui_module
-
-    original = tui_module.Console
-    tui_module.Console = lambda *a, **k: Console(width=width, height=height)
-    try:
-        console = Console(width=width, height=height, record=True, force_terminal=False)
-        console.print(_build_layout(state, list(providers), cfg))
-        return console.export_text().rstrip("\n").split("\n")
-    finally:
-        tui_module.Console = original
+    # The layout is sized from the console it is drawn on, so one console
+    # does both jobs and there is nothing to monkeypatch.
+    console = Console(
+        width=width, height=height, record=True, force_terminal=False,
+        theme=render.THEME,
+    )
+    console.print(_build_layout(state, list(providers), cfg, console))
+    return console.export_text().rstrip("\n").split("\n")
 
 
 def _longest_blank_run(lines) -> int:
@@ -157,22 +156,32 @@ def test_the_monitor_uses_the_height_it_is_given(width, height):
 
 
 def test_both_sparklines_are_drawn_at_every_width():
-    """One of them vanished when the trailing newline was trimmed wrongly."""
-    for width in (60, 80, 120):
+    """Narrower means taller, not less.
+
+    Two ways this has broken: a trailing newline trimmed wrongly removed the
+    download row, and the single-column fallback below 72 columns dropped the
+    whole history pane, losing both sparklines and the split-tunnel state.
+    """
+    for width in (50, 60, 72, 80, 120):
         lines = _render(width, 30)
         bars = [line for line in lines if any(ch in line for ch in "▁▂▃▄▅▆▇█")]
         assert len(bars) == 2, f"{len(bars)} sparklines at {width} columns"
 
 
 def test_the_sparkline_grows_with_the_terminal():
-    """It used to be a fixed 24, so anything under 88 columns truncated it."""
+    """It used to be a fixed 24, so anything under 88 columns truncated it.
+
+    Compared within the two-column layout only. Below 72 columns the panes
+    stack, so each one gets the full width and the sparkline is legitimately
+    wider than it is at 80 in two columns.
+    """
     def bar_count(width):
-        for line in _render(width, 30):
+        for line in _render(width, 40):
             if any(ch in line for ch in "▁▂▃▄▅▆▇█"):
-                return sum(line.count(ch) for ch in "▁▂▃▄▅▆▇█ ".strip())
+                return sum(line.count(ch) for ch in "▁▂▃▄▅▆▇█")
         return 0
 
-    assert bar_count(120) > bar_count(80) > bar_count(60)
+    assert bar_count(160) > bar_count(120) > bar_count(80)
 
 
 def test_no_ellipsis_anywhere():

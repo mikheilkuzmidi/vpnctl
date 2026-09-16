@@ -81,6 +81,10 @@ def test_connect_uses_cached_winner(tmp_path, monkeypatch):
     mock_adapter = MagicMock()
     mock_adapter.provider_id = "warp-masque"
     mock_adapter.is_control = False
+    mock_adapter.probe.return_value = _make_result(
+        mock_adapter.provider_id, 24.0, 90.0
+    )
+    mock_adapter.handshake_age.return_value = 2
     mock_adapter.connect.return_value = None
 
     with patch("vpnctl.cli.load_results", return_value=fake_results):
@@ -99,6 +103,10 @@ def test_connect_rolls_back_on_failure(tmp_path, monkeypatch):
     mock_adapter = MagicMock()
     mock_adapter.provider_id = "warp-masque"
     mock_adapter.is_control = False
+    mock_adapter.probe.return_value = _make_result(
+        mock_adapter.provider_id, 24.0, 90.0
+    )
+    mock_adapter.handshake_age.return_value = 2
     mock_adapter.connect.side_effect = RuntimeError("timeout")
 
     with patch("vpnctl.cli.load_results", return_value=fake_results):
@@ -116,6 +124,10 @@ def test_disconnect_no_active_tunnels(tmp_path, monkeypatch):
     mock_adapter = MagicMock()
     mock_adapter.provider_id = "warp-masque"
     mock_adapter.is_control = False
+    mock_adapter.probe.return_value = _make_result(
+        mock_adapter.provider_id, 24.0, 90.0
+    )
+    mock_adapter.handshake_age.return_value = 2
     mock_adapter.status.return_value = ProviderStatus.DISCONNECTED
 
     with patch("vpnctl.cli.build_providers", return_value=[mock_adapter]):
@@ -123,7 +135,7 @@ def test_disconnect_no_active_tunnels(tmp_path, monkeypatch):
         result = runner.invoke(main, ["disconnect"])
 
     assert result.exit_code == 0
-    assert "No active tunnels" in result.output
+    assert "No tunnel is up" in result.output
     mock_adapter.disconnect.assert_not_called()
 
 
@@ -133,6 +145,10 @@ def test_disconnect_active_tunnel(tmp_path, monkeypatch):
     mock_adapter = MagicMock()
     mock_adapter.provider_id = "warp-masque"
     mock_adapter.is_control = False
+    mock_adapter.probe.return_value = _make_result(
+        mock_adapter.provider_id, 24.0, 90.0
+    )
+    mock_adapter.handshake_age.return_value = 2
     mock_adapter.status.return_value = ProviderStatus.CONNECTED
 
     with patch("vpnctl.cli.build_providers", return_value=[mock_adapter]):
@@ -159,9 +175,17 @@ def test_connect_named_provider(tmp_path, monkeypatch):
     mock_warp = MagicMock()
     mock_warp.provider_id = "warp-masque"
     mock_warp.is_control = False
+    mock_warp.probe.return_value = _make_result(
+        mock_warp.provider_id, 24.0, 90.0
+    )
+    mock_warp.handshake_age.return_value = 2
     mock_wg = MagicMock()
     mock_wg.provider_id = "warp-wireguard"
     mock_wg.is_control = False
+    mock_wg.probe.return_value = _make_result(
+        mock_wg.provider_id, 24.0, 90.0
+    )
+    mock_wg.handshake_age.return_value = 2
     mock_wg.connect.return_value = None
 
     with patch("vpnctl.cli.build_providers", return_value=[mock_warp, mock_wg]):
@@ -179,11 +203,19 @@ def test_connect_disconnects_other_active_provider(tmp_path, monkeypatch):
     active = MagicMock()
     active.provider_id = "warp-masque"
     active.is_control = False
+    active.probe.return_value = _make_result(
+        active.provider_id, 24.0, 90.0
+    )
+    active.handshake_age.return_value = 2
     active.status.return_value = ProviderStatus.CONNECTED
 
     target = MagicMock()
     target.provider_id = "warp-wireguard"
     target.is_control = False
+    target.probe.return_value = _make_result(
+        target.provider_id, 24.0, 90.0
+    )
+    target.handshake_age.return_value = 2
     target.status.return_value = ProviderStatus.DISCONNECTED
     target.connect.return_value = None
 
@@ -399,6 +431,10 @@ def test_connect_never_picks_the_unprotected_control(tmp_path, monkeypatch):
     warp = MagicMock()
     warp.provider_id = "warp-wireguard"
     warp.is_control = False
+    warp.probe.return_value = _make_result(
+        warp.provider_id, 24.0, 90.0
+    )
+    warp.handshake_age.return_value = 2
 
     with patch("vpnctl.cli.load_results", return_value=results), \
          patch("vpnctl.cli.build_providers", return_value=[direct, warp]):
@@ -449,6 +485,10 @@ def test_status_says_plainly_when_nothing_is_protected(tmp_path, monkeypatch):
     warp = MagicMock()
     warp.provider_id = "warp-wireguard"
     warp.is_control = False
+    warp.probe.return_value = _make_result(
+        warp.provider_id, 24.0, 90.0
+    )
+    warp.handshake_age.return_value = 2
     warp.status.return_value = ProviderStatus.DISCONNECTED
 
     with patch("vpnctl.cli.build_providers", return_value=[direct, warp]), \
@@ -466,6 +506,10 @@ def test_status_is_quiet_when_a_tunnel_is_up(tmp_path, monkeypatch):
     warp = MagicMock()
     warp.provider_id = "warp-wireguard"
     warp.is_control = False
+    warp.probe.return_value = _make_result(
+        warp.provider_id, 24.0, 90.0
+    )
+    warp.handshake_age.return_value = 2
     warp.status.return_value = ProviderStatus.CONNECTED
 
     with patch("vpnctl.cli.build_providers", return_value=[warp]), \
@@ -516,6 +560,10 @@ def test_doctor_warns_about_public_excludes(tmp_path, monkeypatch):
     adapter = MagicMock()
     adapter.provider_id = "warp-wireguard"
     adapter.is_control = False
+    adapter.probe.return_value = _make_result(
+        adapter.provider_id, 24.0, 90.0
+    )
+    adapter.handshake_age.return_value = 2
     adapter.doctor.return_value = DoctorResult(
         provider_id="warp-wireguard", ok=True
     )
@@ -544,6 +592,10 @@ def test_connect_does_not_benchmark_when_there_is_no_ranking(tmp_path, monkeypat
     warp = MagicMock()
     warp.provider_id = "warp-wireguard"
     warp.is_control = False
+    warp.probe.return_value = _make_result(
+        warp.provider_id, 24.0, 90.0
+    )
+    warp.handshake_age.return_value = 2
     direct = MagicMock()
     direct.provider_id = "direct"
     direct.is_control = True
@@ -570,3 +622,63 @@ def test_connect_says_so_when_nothing_is_enabled(tmp_path, monkeypatch):
 
     assert result.exit_code == 1
     assert "setup" in result.output
+
+
+def test_disconnect_does_not_claim_to_have_disconnected_the_control(tmp_path, monkeypatch):
+    """The control is not a tunnel, and it is what you are back on afterwards.
+
+    Its status() always reports connected, because the plain connection is
+    always there, so a loop over every provider announced "direct
+    disconnected" for something it had not touched and could not touch: the
+    exact opposite of what had just happened.
+    """
+    _minimal_config(tmp_path, monkeypatch)
+
+    direct = MagicMock()
+    direct.provider_id = "direct"
+    direct.is_control = True
+    direct.status.return_value = ProviderStatus.CONNECTED
+    warp = MagicMock()
+    warp.provider_id = "warp-wireguard"
+    warp.is_control = False
+    warp.probe.return_value = _make_result(
+        warp.provider_id, 24.0, 90.0
+    )
+    warp.handshake_age.return_value = 2
+    warp.status.return_value = ProviderStatus.CONNECTED
+
+    with patch("vpnctl.cli.build_providers", return_value=[direct, warp]):
+        result = CliRunner().invoke(main, ["disconnect"])
+
+    assert result.exit_code == 0, result.output
+    warp.disconnect.assert_called_once()
+    direct.disconnect.assert_not_called()
+    assert "direct disconnected" not in result.output
+    assert "warp-wireguard disconnected" in result.output
+    # And it says what you are back on, which is the useful part.
+    assert "plain connection" in result.output
+
+
+def test_connect_does_not_claim_to_disconnect_the_control_first(tmp_path, monkeypatch):
+    _minimal_config(tmp_path, monkeypatch)
+
+    direct = MagicMock()
+    direct.provider_id = "direct"
+    direct.is_control = True
+    direct.status.return_value = ProviderStatus.CONNECTED
+    warp = MagicMock()
+    warp.provider_id = "warp-wireguard"
+    warp.is_control = False
+    warp.probe.return_value = _make_result(
+        warp.provider_id, 24.0, 90.0
+    )
+    warp.handshake_age.return_value = 2
+    warp.status.return_value = ProviderStatus.DISCONNECTED
+
+    with patch("vpnctl.cli.load_results", return_value=[]), \
+         patch("vpnctl.cli.build_providers", return_value=[direct, warp]):
+        result = CliRunner().invoke(main, ["connect"])
+
+    assert result.exit_code == 0, result.output
+    assert "Disconnecting direct" not in result.output
+    direct.disconnect.assert_not_called()

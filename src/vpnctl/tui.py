@@ -31,6 +31,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from vpnctl import render
 from vpnctl.config import load_config
 from vpnctl.providers.base import ProviderStatus
 from vpnctl.selector import build_providers
@@ -54,6 +55,10 @@ _SLOW_INTERVAL = 30     # seconds between full (RTT + download) probes
 # ---------------------------------------------------------------------------
 # Sparkline
 # ---------------------------------------------------------------------------
+
+# Below two of these a pane has no room for a label beside a value, so the
+# layout drops to one column.
+_PANE_MIN = 36
 
 _SPARKS = " ▁▂▃▄▅▆▇█"
 
@@ -430,20 +435,159 @@ def _log_block(state: ProbeState, rows: int, width: int = 80) -> Text:
     return Text("\n").join(lines)
 
 
-def _build_layout(state: ProbeState, providers, cfg) -> Group:
-    """The whole screen, as a group of exactly-sized pieces.
+def _metrics_column(state: ProbeState, connected, providers, width: int = 48) -> Text:
+    """Status and the four numbers, stacked. The left pane's content."""
+    with state.lock:
+        rtt, jit, loss, dl = (
+            state.rtt_ms,
+            state.jitter_ms,
+            state.loss_pct,
+            state.dl_mbps,
+        )
+        count, last = state.probe_count, state.last_updated
+        statuses = dict(state.provider_status)
 
-    A Group rather than a Layout of Panels: a panel border costs two rows and
-    two columns for no information, and four of them are what produced the
-    blank middle of the screen.
+    lines: list[Text] = []
+    for provider in providers:
+        status = statuses.get(provider.provider_id)
+        line = Text("  ")
+        line.append(f"{provider.provider_id:<18}", style="label")
+        line.append_text(_status_dot(status))
+        # Only when it fits. A wrapped provider row put "control" on a line
+        # of its own, which read as a fourth provider.
+        if provider.is_control and len(line.plain) + 9 <= width:
+            line.append("  control", style="muted")
+        lines.append(line)
+
+    lines.append(Text(""))
+    if connected is None:
+        lines.append(Text("  no tunnel is up", style="warn"))
+        lines.append(Text("  traffic is not protected", style="muted"))
+        for label in ("rtt", "jitter", "loss", "download"):
+            row = Text("  ")
+            row.append(f"{label:<18}", style="label")
+            row.append("-", style="absent")
+            lines.append(row)
+    else:
+        for label, value in (
+            ("rtt", _fmt(rtt, "ms", warn=200)),
+            ("jitter", _fmt(jit, "ms", warn=50)),
+            ("loss", _fmt(loss, "%", warn=5)),
+            ("download", _fmt_throughput(dl, floor=1.0)),
+        ):
+            row = Text("  ")
+            row.append(f"{label:<18}", style="label")
+            row.append_text(value)
+            lines.append(row)
+
+    lines.append(Text(""))
+    age = f"{time.time() - last:.0f}s ago" if last else "never"
+    for label, value in (("probes", str(count)), ("last probe", age)):
+        row = Text("  ")
+        row.append(f"{label:<18}", style="label")
+        row.append(value, style="muted")
+        lines.append(row)
+
+    return Text("\n").join(lines)
+
+
+def _status_dot(status) -> Text:
+    if status == ProviderStatus.CONNECTED:
+        return Text("\u25cf connected", style="ok")
+    if status == ProviderStatus.CONNECTING:
+        return Text("\u25cc connecting", style="warn")
+    if status is None:
+        return Text("\u00b7 checking", style="absent")
+    return Text("\u25cb off", style="absent")
+
+
+def _history_column(state: ProbeState, cfg, width: int, rows: int) -> Text:
+    """Sparklines and the split-tunnel list. The right pane's content."""
+    with state.lock:
+        rtt_hist = list(state.rtt_history)
+        dl_hist = list(state.dl_history)
+
+    # The label and the range take about 22 columns of the pane.
+    spark = max(10, width - 16)
+    lines: list[Text] = []
+    for label, values, unit, style in (
+        ("rtt ms", rtt_hist, "ms", "spark.rtt"),
+        ("download", dl_hist, "Mbps", "spark.down"),
+    ):
+        head = Text("  ")
+        head.append(f"{label:<13}", style="label")
+        head.append(_sparkline(values, spark), style=style)
+        lines.append(head)
+        tail = Text("  " + " " * 13)
+        if values:
+            window = values[-spark:]
+            tail.append(f"{min(window):.0f} to {max(window):.0f} {unit}", style="muted")
+        else:
+            tail.append("collecting", style="absent")
+        lines.append(tail)
+        lines.append(Text(""))
+
+    excludes = cfg.split_tunnel.excludes if cfg.split_tunnel.enabled else []
+    head = Text("  ")
+    head.append(f"{'split tunnel':<13}", style="label")
+    head.append_text(
+        Text("\u25cf on", style="ok") if excludes else Text("\u25cb off", style="absent")
+    )
+    lines.append(head)
+    # Whatever room is left in the pane goes to the exclusion list.
+    room = max(0, rows - len(lines))
+    shown = excludes if len(excludes) <= room else excludes[: max(0, room - 1)]
+    for cidr in shown:
+        lines.append(Text("  " + " " * 13 + cidr, style="accent"))
+    if len(excludes) > len(shown):
+        lines.append(
+            Text("  " + " " * 13 + f"+{len(excludes) - len(shown)} more", style="muted")
+        )
+
+    return Text("\n").join(lines)
+
+
+def _log_lines(state: ProbeState, rows: int, width: int) -> Text:
+    """The last few probes, newest last, one row each."""
+    with state.lock:
+        events = list(state.events)[-rows:]
+
+    lines: list[Text] = []
+    for when, rtt, jit, loss, dl in events:
+        line = Text("  ")
+        line.append(datetime.fromtimestamp(when).strftime("%H:%M:%S") + "  ", style="muted")
+        line.append("rtt ", style="label")
+        line.append(f"{rtt:.1f}" if rtt is not None else "-")
+        line.append("   jitter ", style="label")
+        line.append(f"{jit:.1f}" if jit is not None else "-")
+        line.append("   loss ", style="label")
+        line.append(f"{loss:.1f}%" if loss is not None else "-")
+        suffix = f"   download {dl:.2f} Mbps" if dl is not None else ""
+        # Every entry has to fit on one row, or the pane grows past the space
+        # it was given and pushes the footer off the bottom.
+        if suffix and len(line.plain) + len(suffix) <= width - 4:
+            line.append("   download ", style="label")
+            line.append(f"{dl:.2f} Mbps")
+        if len(line.plain) > width - 4:
+            line = Text(line.plain[: width - 4])
+        lines.append(line)
+    return Text("\n").join(lines) if lines else Text("  waiting for the first probe", style="absent")
+
+
+def _build_layout(state: ProbeState, providers, cfg, console: Console) -> Group:
+    """The whole screen.
+
+    Panels, because that is the shape that reads best: each region says what
+    it is on its own border. The earlier version of this wasted a third of
+    the screen, but the cause was not the panels, it was a fixed 50/50 body
+    split with nothing to put in it. Every height here is measured from the
+    content and the leftover goes to the probe log, so the boxes are back and
+    nothing pads.
     """
-    console = Console()
     width, height = console.width, console.height
 
     with state.lock:
         statuses = dict(state.provider_status)
-        count = state.probe_count
-        last = state.last_updated
 
     tunnels = [p for p in providers if not p.is_control]
     connected = next(
@@ -454,81 +598,86 @@ def _build_layout(state: ProbeState, providers, cfg) -> Group:
         ),
         None,
     )
-    excludes = cfg.split_tunnel.excludes if cfg.split_tunnel.enabled else []
-    regions = _regions(height, len(providers), len(excludes))
 
-    age = f"{time.time() - last:.0f}s ago" if last else "never"
-    status = (
-        f"{connected} \u25cf connected" if connected else "\u25cb not connected"
+    header = Text("  ")
+    header.append("vpnctl", style="heading")
+    header.append("  live monitor", style="accent")
+    state_text = (
+        Text(f"{connected} \u25cf connected", style="ok")
+        if connected
+        else Text("\u25cb not connected", style="absent")
     )
+    pad = width - len(header.plain) - len(state_text.plain) - 6
+    header.append(" " * max(1, pad))
+    header.append_text(state_text)
 
-    pieces: list = []
-    head = Text("  vpnctl ", style="bold cyan")
-    head.append("live monitor", style="cyan")
-    pad = width - len(head.plain) - len(status) - len(age) - 5
-    head.append(" " * max(1, pad))
-    head.append(status, style="green" if connected else "dim")
-    head.append(f"   {age}", style="dim")
-    pieces.append(head)
+    # One column when there is no room for two.
+    single = width < 2 * _PANE_MIN
 
-    pieces.append(Rule(style="dim"))
-    pieces.append(_metrics_strip(state, connected is not None, width))
-    pieces.append(Text(f"  probe {count}", style="dim"))
-    pieces.append(Rule(style="dim"))
-    pieces.append(_history_block(state, width))
-    pieces.append(Rule(style="dim"))
+    pane_width = width - 4 if single else (width // 2) - 4
+    left = _metrics_column(state, connected, providers, pane_width)
+    right_rows = len(left.plain.split("\n"))
+    right = _history_column(state, cfg, pane_width, right_rows)
 
-    if providers:
-        pieces.append(_providers_line(state, providers))
+    body_rows = max(len(left.plain.split("\n")), len(right.plain.split("\n")))
 
-    # Everything above is fixed. Measure it, and share what is left between
-    # the split-tunnel list and the probe log, always keeping one row for the
-    # footer. Predicting these heights is what put the screen over the
-    # terminal twice: once for the "+N more" line, once for a metrics strip
-    # that wraps to two lines at 60 columns.
-    def measured() -> int:
-        return len(
-            console.render_lines(Group(*pieces), console.options.update(width=width))
+    pieces: list = [Panel(header, box=box.ROUNDED, style="rule", padding=(0, 0))]
+    if single:
+        # Stacked, not dropped. An earlier version showed only the connection
+        # pane below 72 columns, which silently lost both sparklines and the
+        # split-tunnel state: narrower should mean taller, not less.
+        pieces.append(
+            Panel(
+                left,
+                title="connection",
+                box=box.ROUNDED,
+                height=len(left.plain.split("\n")) + 2,
+            )
         )
-
-    remaining = height - measured() - 1  # the footer
-    split_budget = max(1, min(regions["split"], remaining - 1))
-
-    split = Text("  split tunnel  ", style="dim")
-    if excludes:
-        split.append("\u25cf enabled", style="green")
-        # One row for this line. If they all fit, the rest of the budget is
-        # theirs; if they do not, one row has to be left for "+N more", which
-        # is what the screen previously ran over the terminal height by.
-        budget = max(0, split_budget - 1)
-        shown = (
-            excludes
-            if len(excludes) <= budget
-            else excludes[: max(0, budget - 1)]
-        )
-        for cidr in shown:
-            split.append(f"\n                {cidr}", style="dim cyan")
-        if len(excludes) > len(shown):
-            split.append(
-                f"\n                +{len(excludes) - len(shown)} more", style="dim"
+        # Whatever is left after the header, the connection pane and the
+        # footer. Stacking two full-height panes does not fit a short
+        # terminal, so this one is trimmed rather than allowed to push the
+        # footer off the bottom.
+        spare_rows = height - 3 - (len(left.plain.split("\n")) + 2) - 3
+        if spare_rows >= 5:
+            shown = right.plain.split("\n")[: spare_rows - 2]
+            pieces.append(
+                Panel(
+                    Text("\n").join(Text(line) for line in shown),
+                    title="history and split tunnel",
+                    box=box.ROUNDED,
+                    height=spare_rows,
+                )
             )
     else:
-        split.append("\u25cb disabled", style="dim")
-    pieces.append(split)
-
-    # The log takes whatever is left after that, or is dropped entirely when
-    # there is not enough for it to be worth reading.
-    spare = height - measured() - 2  # the footer, and the rule above the log
-    if spare >= 3:
-        pieces.append(Rule(style="dim"))
-        pieces.append(_log_block(state, spare, width))
+        panes = Table.grid(expand=True)
+        panes.add_column(ratio=1)
+        panes.add_column(ratio=1)
+        panes.add_row(
+            Panel(left, title="connection", box=box.ROUNDED, height=body_rows + 2),
+            Panel(right, title="history and split tunnel", box=box.ROUNDED, height=body_rows + 2),
+        )
+        pieces.append(panes)
 
     footer = Text("  ")
-    footer.append("ctrl-c", style="bold cyan")
-    footer.append(" quit", style="dim")
-    footer.append(f"    probing every {_FAST_INTERVAL}s", style="dim")
-    footer.append(f", speed every {_SLOW_INTERVAL}s", style="dim")
-    pieces.append(footer)
+    footer.append("ctrl-c", style="key")
+    footer.append(" quit", style="muted")
+    footer.append(f"    probing every {_FAST_INTERVAL}s", style="muted")
+    footer.append(f", speed every {_SLOW_INTERVAL}s", style="muted")
+
+    # Measure what is fixed, and give the rest to the log.
+    used = len(console.render_lines(Group(*pieces), console.options.update(width=width)))
+    spare = height - used - 3  # the footer panel
+    if spare >= 4:
+        pieces.append(
+            Panel(
+                _log_lines(state, spare - 2, width),
+                title="recent probes",
+                box=box.ROUNDED,
+                height=spare,
+            )
+        )
+    pieces.append(Panel(footer, box=box.ROUNDED, style="rule", padding=(0, 0)))
 
     return Group(*pieces)
 
@@ -537,7 +686,7 @@ def run_tui() -> None:
     """Start the live TUI. Blocks until Ctrl-C."""
     cfg = load_config()
     providers = build_providers(cfg)
-    console = Console()
+    console = render.console()
 
     state = ProbeState()
     stop = threading.Event()
@@ -565,7 +714,7 @@ def run_tui() -> None:
         ) as live:
             while True:
                 live.update(
-                    _build_layout(state, providers, cfg)
+                    _build_layout(state, providers, cfg, console)
                 )
                 time.sleep(0.5)
     except KeyboardInterrupt:

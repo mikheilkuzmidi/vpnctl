@@ -48,20 +48,24 @@ from vpnctl.toml_utils import dumps as toml_dumps
 from vpnctl.tui import run_tui
 from vpnctl.watch import run_watch
 
-console = Console()
-# No base style: rich applies one underneath markup, so with style="bold red"
-# every err_console.print("[yellow]...") came out red and a warning was
-# indistinguishable from a failure. Callers say which they mean.
-err_console = Console(stderr=True)
+console = render.console()
+err_console = render.error_console()
+
+
+def _fmt_metric(value, unit: str, decimals: int = 1) -> str:
+    """One way of printing a measurement, shared by connect and status."""
+    if value is None:
+        return "[absent]-[/absent]"
+    return f"[ok]{value:.{decimals}f}[/ok] [muted]{unit}[/muted]"
 
 
 def _status_badge(s: ProviderStatus) -> str:
     mapping = {
         ProviderStatus.CONNECTED: "[green]connected[/green]",
-        ProviderStatus.DISCONNECTED: "[dim]disconnected[/dim]",
-        ProviderStatus.CONNECTING: "[yellow]connecting…[/yellow]",
-        ProviderStatus.ERROR: "[red]error[/red]",
-        ProviderStatus.UNKNOWN: "[dim]unknown[/dim]",
+        ProviderStatus.DISCONNECTED: "[muted]disconnected[/muted]",
+        ProviderStatus.CONNECTING: "[warn]connecting…[/warn]",
+        ProviderStatus.ERROR: "[bad]error[/bad]",
+        ProviderStatus.UNKNOWN: "[muted]unknown[/muted]",
     }
     return mapping.get(s, str(s))
 
@@ -86,9 +90,9 @@ def doctor() -> None:
     providers = build_providers(cfg)
 
     if not providers:
-        console.print("[yellow]No providers are enabled.[/yellow]")
+        console.print("[warn]No providers are enabled.[/warn]")
         console.print(
-            f"Edit [bold]{config_path()}[/bold] to enable providers."
+            f"Edit [heading]{config_path()}[/heading] to enable providers."
         )
         sys.exit(1)
 
@@ -96,19 +100,19 @@ def doctor() -> None:
     for adapter in providers:
         result = adapter.doctor()
         if result.ok:
-            console.print(f"[green]✓[/green] {result.provider_id}")
+            console.print(f"[ok]✓[/ok] {result.provider_id}")
         else:
             all_ok = False
-            console.print(f"[red]✗[/red] {result.provider_id}")
+            console.print(f"[bad]✗[/bad] {result.provider_id}")
             for issue in result.issues:
-                console.print(f"    [red]issue:[/red] {issue}")
+                console.print(f"    [bad]issue:[/bad] {issue}")
         # Hints are printed whether or not the check passed. Several of them
         # say something a passing provider still needs to hear, like which
         # gateway it would use or that its credential has not been fetched
         # yet, and suppressing those made a ready provider and an unused one
         # look identical.
         for hint in result.hints:
-            console.print(f"    [cyan]hint:[/cyan]  {hint}")
+            console.print(f"    [accent]hint:[/accent]  {hint}")
 
     # A config-level check rather than a provider one: it is about what the
     # tunnel is asked to carry, not whether a provider can be reached.
@@ -116,26 +120,26 @@ def doctor() -> None:
         leaking = public_excludes(cfg.split_tunnel.excludes)
         if leaking:
             console.print(
-                f"\n[yellow]Split tunnel sends {len(leaking)} public range(s) "
-                "outside the tunnel:[/yellow]"
+                f"\n[warn]Split tunnel sends {len(leaking)} public range(s) "
+                "outside the tunnel:[/warn]"
             )
             for cidr in leaking:
                 console.print(f"    {cidr}")
             console.print(
-                "[dim]  Traffic to those addresses is not protected. Private "
+                "[muted]  Traffic to those addresses is not protected. Private "
                 "ranges are excluded as a matter of course, so they are not "
                 "listed; these are public. Remove one with: "
-                "vpnctl split-tunnel remove CIDR[/dim]"
+                "vpnctl split-tunnel remove CIDR[/muted]"
             )
 
     if all_ok:
         console.print("\n[green]All checks passed.[/green]")
         console.print(
-            "[dim]If a connection still fails, `vpnctl diagnose` measures "
-            "what this network is blocking.[/dim]"
+            "[muted]If a connection still fails, `vpnctl diagnose` measures "
+            "what this network is blocking.[/muted]"
         )
     else:
-        console.print("\n[yellow]Some checks failed - see hints above.[/yellow]")
+        console.print("\n[warn]Some checks failed - see hints above.[/warn]")
         sys.exit(1)
 
 
@@ -146,12 +150,12 @@ def benchmark() -> None:
     providers = build_providers(cfg)
 
     if not providers:
-        err_console.print("[red]No providers enabled.[/red]")
+        err_console.print("[bad]No providers enabled.[/bad]")
         sys.exit(1)
 
     console.print(
-        f"[bold]Benchmarking {len(providers)} provider(s)…[/bold]  "
-        "[dim](this connects each one in sequence)[/dim]"
+        f"[heading]Benchmarking {len(providers)} provider(s)…[/heading]  "
+        "[muted](this connects each one in sequence)[/muted]"
     )
 
     # A probe pings three hosts and then measures throughput, which takes tens
@@ -162,13 +166,13 @@ def benchmark() -> None:
     def _is_finding(msg: str) -> bool:
         return "rtt=" in msg or "failed" in msg
 
-    with console.status("[dim]starting…[/dim]", spinner="dots") as spinner:
+    with console.status("[muted]starting…[/muted]", spinner="dots") as spinner:
 
         def _log(msg: str) -> None:
             if _is_finding(msg):
                 console.print(f"  {msg}")
             else:
-                spinner.update(f"[dim]{msg}[/dim]")
+                spinner.update(f"[muted]{msg}[/muted]")
 
         results = run_benchmark(providers, status_cb=_log)
 
@@ -197,7 +201,7 @@ def connect(provider: Optional[str]) -> None:
     providers = build_providers(cfg)
 
     if not providers:
-        err_console.print("[red]No providers enabled.[/red]")
+        err_console.print("[bad]No providers enabled.[/bad]")
         sys.exit(1)
 
     if provider:
@@ -217,8 +221,8 @@ def connect(provider: Optional[str]) -> None:
 
         if not tunnels:
             err_console.print(
-                "[red]No VPN provider is enabled, so there is nothing to "
-                "connect to.[/red] Run `vpnctl setup`."
+                "[bad]No VPN provider is enabled, so there is nothing to "
+                "connect to.[/bad] Run `vpnctl setup`."
             )
             sys.exit(1)
 
@@ -239,26 +243,52 @@ def connect(provider: Optional[str]) -> None:
             target = tunnels[0]
             if len(tunnels) > 1:
                 console.print(
-                    f"[dim]No benchmark yet, so using {target.provider_id}. "
-                    "`vpnctl benchmark` ranks them.[/dim]"
+                    f"[muted]No benchmark yet, so using {target.provider_id}. "
+                    "`vpnctl benchmark` ranks them.[/muted]"
                 )
 
     for adapter in providers:
-        if adapter is target:
+        # Same reason as in disconnect: the control is not a tunnel, and
+        # "Disconnecting direct first" described something that never
+        # happened and could not.
+        if adapter is target or adapter.is_control:
             continue
         try:
             if adapter.status() == ProviderStatus.CONNECTED:
                 console.print(
-                    f"Disconnecting [bold]{adapter.provider_id}[/bold] first…"
+                    f"Disconnecting [heading]{adapter.provider_id}[/heading] first…"
                 )
                 adapter.disconnect()
         except Exception:
             pass
 
-    console.print(f"Connecting [bold]{target.provider_id}[/bold]…")
+    console.print(f"Connecting [heading]{target.provider_id}[/heading]…")
     try:
         target.connect()
-        console.print(f"[green]✓[/green] {target.provider_id} connected.")
+        render.verdict(console, f"{target.provider_id} connected.")
+
+        # And then say what you actually got. Reporting "connected" and
+        # nothing else leaves the obvious question unanswered, and the
+        # measurement is the same probe the benchmark uses, so it costs a few
+        # seconds rather than a second implementation.
+        with console.status("[muted]measuring the tunnel…[/muted]", spinner="dots"):
+            measured = target.probe()
+
+        rows: list[tuple[str, object]] = []
+        if measured.ok:
+            rows = [
+                ("latency", _fmt_metric(measured.median_rtt_ms, "ms")),
+                ("jitter", _fmt_metric(measured.jitter_ms, "ms")),
+                ("packet loss", _fmt_metric(measured.loss_pct, "%")),
+                ("download", _fmt_metric(measured.throughput_mbps, "Mbps", 2)),
+            ]
+        else:
+            rows = [("measurement", f"[warn]{measured.error}[/warn]")]
+        age = target.handshake_age() if hasattr(target, "handshake_age") else None
+        if age is not None:
+            rows.append(("last handshake", f"{age}s ago"))
+        console.print()
+        render.rows(console, rows)
     except RuntimeError as exc:
         err_console.print(f"Connect failed: {exc}")
         console.print("Rolling back - disconnecting…")
@@ -288,8 +318,8 @@ def status() -> None:
             rows.append(
                 (
                     adapter.provider_id,
-                    f"{badge}  [dim]the plain connection, measured as a "
-                    "control[/dim]",
+                    f"{badge}  [muted]the plain connection, measured as a "
+                    "control[/muted]",
                 )
             )
             continue
@@ -304,6 +334,26 @@ def status() -> None:
     )
     render.rows(console, rows)
 
+    # How long since the tunnel last heard from its peer. Cheap, no network
+    # traffic, and the one number that says whether a tunnel reported as up
+    # is actually carrying anything.
+    ages: list[tuple[str, str]] = []
+    for adapter in providers:
+        if adapter.is_control or not hasattr(adapter, "handshake_age"):
+            continue
+        if adapter.status() != ProviderStatus.CONNECTED:
+            continue
+        age = adapter.handshake_age()
+        ages.append(
+            (
+                f"{adapter.provider_id} handshake",
+                f"{age}s ago" if age is not None else "[warn]never[/warn]",
+            )
+        )
+    if ages:
+        console.print()
+        render.rows(console, ages)
+
     if not tunnelled:
         render.verdict(
             console,
@@ -313,11 +363,11 @@ def status() -> None:
 
     results = load_results()
     if results:
-        console.print("\n[bold]Last benchmark[/bold]")
+        console.print("\n[heading]Last benchmark[/heading]")
         _print_results_table(results)
     else:
         console.print(
-            "\n[dim]No benchmark results yet. Run:[/dim] vpnctl benchmark"
+            "\n[muted]No benchmark results yet. Run:[/muted] vpnctl benchmark"
         )
 
 
@@ -349,7 +399,7 @@ def watch(do_apply: bool) -> None:
     try:
         run_watch(cfg, apply=do_apply, log_cb=_log)
     except KeyboardInterrupt:
-        console.print("\n[dim]Watch stopped.[/dim]")
+        console.print("\n[muted]Watch stopped.[/muted]")
 
 
 @main.command()
@@ -358,27 +408,40 @@ def disconnect() -> None:
     cfg = load_config()
     providers = build_providers(cfg)
 
-    any_disconnected = False
+    torn_down: list[str] = []
     for adapter in providers:
-        s = adapter.status()
-        if s == ProviderStatus.CONNECTED:
-            console.print(f"Disconnecting [bold]{adapter.provider_id}[/bold]…")
+        # The control is not a tunnel. Its status() always reports connected,
+        # because the plain connection is always there, so a loop over every
+        # provider used to announce "direct disconnected" for something it had
+        # not touched and could not touch. Worse, the plain connection is what
+        # you are back on afterwards, so it read as the exact opposite of what
+        # had happened.
+        if adapter.is_control:
+            continue
+        if adapter.status() == ProviderStatus.CONNECTED:
+            console.print(f"Disconnecting [heading]{adapter.provider_id}[/heading]…")
             adapter.disconnect()
-            console.print(f"[green]✓[/green] {adapter.provider_id} disconnected.")
-            any_disconnected = True
+            torn_down.append(adapter.provider_id)
 
-    if not any_disconnected:
-        console.print("[dim]No active tunnels.[/dim]")
+    if torn_down:
+        render.verdict(
+            console,
+            f"{', '.join(torn_down)} disconnected. Back on the plain "
+            "connection, which is not protected.",
+            ok=False,
+        )
+    else:
+        console.print("[muted]No tunnel is up.[/muted]")
 
 
 @main.command("diagnose")
 def diagnose() -> None:
     """Work out what this network will carry, without changing any routing."""
     console.print(
-        "[bold]Measuring what this network allows…[/bold] "
-        "[dim](nothing is connected or rerouted)[/dim]\n"
+        "[heading]Measuring what this network allows…[/heading] "
+        "[muted](nothing is connected or rerouted)[/muted]\n"
     )
-    with console.status("[dim]probing…[/dim]", spinner="dots"):
+    with console.status("[muted]probing…[/muted]", spinner="dots"):
         report = run_checks()
 
     table = Table(box=box.SIMPLE_HEAD)
@@ -388,12 +451,12 @@ def diagnose() -> None:
     for check in report.checks:
         table.add_row(
             check.name,
-            "[green]ok[/green]" if check.ok else "[red]no[/red]",
+            "[green]ok[/green]" if check.ok else "[bad]no[/bad]",
             check.detail,
         )
     console.print(table)
 
-    console.print(f"\n[bold]{report.verdict()}[/bold]\n")
+    console.print(f"\n[heading]{report.verdict()}[/heading]\n")
     console.print(report.recommendation())
 
 
@@ -409,7 +472,7 @@ def transport_show() -> None:
     render.header(console, "vpnctl transport", cfg.transport.kind)
     rows = [("kind", cfg.transport.kind)]
     if cfg.transport.kind != "direct":
-        rows.append(("server", cfg.transport.server or "[dim]not set[/dim]"))
+        rows.append(("server", cfg.transport.server or "[muted]not set[/muted]"))
         rows.append(("local port", str(cfg.transport.local_port)))
         if cfg.transport.sni:
             rows.append(("TLS name", cfg.transport.sni))
@@ -440,8 +503,8 @@ def transport_set(
     """Choose how the tunnel reaches its server."""
     if kind == "wstunnel" and not server:
         err_console.print(
-            "[yellow]wstunnel needs --server, the URL of the relay running on "
-            "your server, for example wss://vpn.example.com:443[/yellow]"
+            "[warn]wstunnel needs --server, the URL of the relay running on "
+            "your server, for example wss://vpn.example.com:443[/warn]"
         )
         sys.exit(2)
     path = configure_transport(
@@ -453,11 +516,11 @@ def transport_set(
         credentials=credentials,
         verify_certificate=verify_certificate,
     )
-    console.print(f"[green]✓[/green] transport = {kind}. Written to {path}.")
+    console.print(f"[ok]✓[/ok] transport = {kind}. Written to {path}.")
     if kind == "wstunnel":
         console.print(
-            "[dim]  Run `vpnctl transport test` to prove the mechanism, then "
-            "`vpnctl connect`.[/dim]"
+            "[muted]  Run `vpnctl transport test` to prove the mechanism, then "
+            "`vpnctl connect`.[/muted]"
         )
 
 
@@ -471,18 +534,18 @@ def transport_test(rebuild: bool) -> None:
     transport. The first half is what makes the second half mean anything.
     """
     console.print(
-        "[bold]Testing the transport against a blocked port…[/bold] "
-        "[dim](two containers; this machine is not touched)[/dim]"
+        "[heading]Testing the transport against a blocked port…[/heading] "
+        "[muted](two containers; this machine is not touched)[/muted]"
     )
-    with console.status("[dim]building both ends…[/dim]", spinner="dots"):
+    with console.status("[muted]building both ends…[/muted]", spinner="dots"):
         try:
             result = run_bypass_test(rebuild=rebuild)
         except BypassError as exc:
-            err_console.print(f"[red]{exc}[/red]")
+            err_console.print(f"[bad]{exc}[/bad]")
             sys.exit(1)
 
     def mark(ok: bool) -> str:
-        return "[green]yes[/green]" if ok else "[red]no[/red]"
+        return "[green]yes[/green]" if ok else "[bad]no[/bad]"
 
     render.rows(
         console,
@@ -494,12 +557,12 @@ def transport_test(rebuild: bool) -> None:
     )
     if result.ok:
         console.print(
-            "\n[green]✓[/green] The transport works: a tunnel that cannot "
+            "\n[ok]✓[/ok] The transport works: a tunnel that cannot "
             "reach its own port still came up over TCP 443."
         )
     else:
-        err_console.print("\n[red]The transport did not get through.[/red]")
-        err_console.print(f"[dim]{result.output[-1200:]}[/dim]")
+        err_console.print("\n[bad]The transport did not get through.[/bad]")
+        err_console.print(f"[muted]{result.output[-1200:]}[/muted]")
         sys.exit(1)
 
 
@@ -527,36 +590,36 @@ def docker_smoke_test(provider: str, rebuild: bool) -> None:
     """Prove a tunnel works inside Docker, without touching this machine."""
     cfg = load_config()
     console.print(
-        f"[bold]Testing {provider} inside Docker…[/bold] "
-        "[dim](this machine keeps its own default route throughout)[/dim]"
+        f"[heading]Testing {provider} inside Docker…[/heading] "
+        "[muted](this machine keeps its own default route throughout)[/muted]"
     )
     # The first run builds an Ubuntu image, which is the slow part and looks
     # like a hang without saying so.
-    with console.status("[dim]preparing the container…[/dim]", spinner="dots"):
+    with console.status("[muted]preparing the container…[/muted]", spinner="dots"):
         try:
             result = run_docker_smoke(cfg, provider_id=provider, rebuild=rebuild)
         except NotConfigured as exc:
-            err_console.print(f"[yellow]{exc}[/yellow]")
+            err_console.print(f"[warn]{exc}[/warn]")
             sys.exit(2)
         except NoHandshake as exc:
-            err_console.print(f"[red]No handshake.[/red] {exc}")
+            err_console.print(f"[bad]No handshake.[/bad] {exc}")
             sys.exit(1)
         except RuntimeError as exc:
-            err_console.print(f"[red]{exc}[/red]")
+            err_console.print(f"[bad]{exc}[/bad]")
             sys.exit(1)
 
     rows = [
-        ("egress without the tunnel", f"[dim]{result.baseline_ip}[/dim]"),
-        ("egress through the tunnel", f"[bold]{result.public_ip}[/bold]"),
+        ("egress without the tunnel", f"[muted]{result.baseline_ip}[/muted]"),
+        ("egress through the tunnel", f"[heading]{result.public_ip}[/heading]"),
     ]
     if result.warp:
-        rows.append(("Cloudflare reports WARP", f"[bold]{result.warp}[/bold]"))
+        rows.append(("Cloudflare reports WARP", f"[heading]{result.warp}[/heading]"))
     rows.append(
         (
             "DNS inside the tunnel",
             "[green]resolves[/green]"
             if result.dns_ok
-            else "[red]does not resolve[/red]",
+            else "[bad]does not resolve[/bad]",
         )
     )
     render.rows(console, rows)
@@ -618,7 +681,7 @@ def bootstrap_wireguard_vps_cmd(
     in ~/.config/vpnctl/config.toml.
     """
     console.print(
-        f"Bootstrapping [bold]{ssh_target}[/bold] for WireGuard on UDP {port}…"
+        f"Bootstrapping [heading]{ssh_target}[/heading] for WireGuard on UDP {port}…"
     )
     try:
         result = bootstrap_wireguard_vps(
@@ -637,13 +700,13 @@ def bootstrap_wireguard_vps_cmd(
         err_console.print(f"stderr: {stderr}")
         sys.exit(exc.returncode or 1)
     except RuntimeError as exc:
-        err_console.print(f"[red]{exc}[/red]")
+        err_console.print(f"[bad]{exc}[/bad]")
         sys.exit(1)
 
-    console.print("[green]✓[/green] VPS bootstrap complete.")
-    console.print(f"Endpoint: [bold]{result.endpoint}[/bold]")
-    console.print(f"Key file: [bold]{result.key_file}[/bold]")
-    console.print(f"Config:   [bold]{result.config_file}[/bold]")
+    console.print("[ok]✓[/ok] VPS bootstrap complete.")
+    console.print(f"Endpoint: [heading]{result.endpoint}[/heading]")
+    console.print(f"Key file: [heading]{result.key_file}[/heading]")
+    console.print(f"Config:   [heading]{result.config_file}[/heading]")
     console.print(
         "\nNext steps:\n"
         "  1. vpnctl doctor\n"
@@ -694,7 +757,7 @@ def bootstrap_tailscale_exit_node_cmd(
     at https://login.tailscale.com/admin/machines.
     """
     console.print(
-        f"Bootstrapping [bold]{ssh_target}[/bold] as Tailscale exit node…"
+        f"Bootstrapping [heading]{ssh_target}[/heading] as Tailscale exit node…"
     )
     try:
         result = bootstrap_tailscale_exit_node(
@@ -711,10 +774,10 @@ def bootstrap_tailscale_exit_node_cmd(
         err_console.print(f"stderr: {stderr}")
         sys.exit(exc.returncode or 1)
     except RuntimeError as exc:
-        err_console.print(f"[red]{exc}[/red]")
+        err_console.print(f"[bad]{exc}[/bad]")
         sys.exit(1)
 
-    console.print("[green]✓[/green] Tailscale installed and configured on VPS.")
+    console.print("[ok]✓[/ok] Tailscale installed and configured on VPS.")
 
     if result.auth_url:
         console.print(
@@ -724,17 +787,17 @@ def bootstrap_tailscale_exit_node_cmd(
         console.print(
             "After authenticating, approve the exit node at:\n"
             "  https://login.tailscale.com/admin/machines\n"
-            f"  → find [bold]{hostname}[/bold]\n"
-            "  → Edit route settings → Enable [bold]Use as exit node[/bold]"
+            f"  → find [heading]{hostname}[/heading]\n"
+            "  → Edit route settings → Enable [heading]Use as exit node[/heading]"
         )
     else:
-        console.print(f"Tailscale IP: [bold]{result.tailscale_ip}[/bold]")
+        console.print(f"Tailscale IP: [heading]{result.tailscale_ip}[/heading]")
         console.print(
             f"\n[bold yellow]Action required:[/bold yellow] "
             "Approve the exit node at:\n"
             "  https://login.tailscale.com/admin/machines\n"
-            f"  → find [bold]{hostname}[/bold]\n"
-            "  → Edit route settings → Enable [bold]Use as exit node[/bold]"
+            f"  → find [heading]{hostname}[/heading]\n"
+            "  → Edit route settings → Enable [heading]Use as exit node[/heading]"
         )
 
     ts_ip = result.tailscale_ip or "<tailscale-ip>"
@@ -775,19 +838,19 @@ def split_tunnel_list() -> None:
     enabled = raw.get("split_tunnel", {}).get("enabled", False)
     excludes: list[str] = raw.get("split_tunnel", {}).get("excludes", [])
 
-    badge = "[green]enabled[/green]" if enabled else "[dim]disabled[/dim]"
+    badge = "[green]enabled[/green]" if enabled else "[muted]disabled[/muted]"
     console.print(f"Split tunnel: {badge}")
 
     if excludes:
-        console.print("\n[bold]Configured excludes[/bold] (bypass VPN):")
+        console.print("\n[heading]Configured excludes[/heading] (bypass VPN):")
         for cidr in excludes:
             console.print(f"  {cidr}")
     else:
-        console.print("[dim]No excludes configured.[/dim]")
+        console.print("[muted]No excludes configured.[/muted]")
 
     warp_live = list_warp_excludes()
     if warp_live:
-        console.print("\n[bold]WARP live excludes[/bold] (warp-cli split-tunnel list):")
+        console.print("\n[heading]WARP live excludes[/heading] (warp-cli split-tunnel list):")
         for entry in warp_live:
             console.print(f"  {entry}")
 
@@ -803,14 +866,14 @@ def split_tunnel_add(cidr: str) -> None:
     st = raw.setdefault("split_tunnel", {})
     excludes: list[str] = list(st.get("excludes", []))
     if cidr in excludes:
-        console.print(f"[dim]{cidr} is already in the exclusion list.[/dim]")
+        console.print(f"[muted]{cidr} is already in the exclusion list.[/muted]")
         return
     excludes.append(cidr)
     st["excludes"] = excludes
     _save_raw_config(raw)
-    console.print(f"[green]✓[/green] Added {cidr} to split-tunnel excludes.")
+    console.print(f"[ok]✓[/ok] Added {cidr} to split-tunnel excludes.")
     console.print(
-        "[dim]Re-run [bold]vpnctl connect[/bold] for the change to take effect.[/dim]"
+        "[muted]Re-run [heading]vpnctl connect[/heading] for the change to take effect.[/muted]"
     )
 
 
@@ -825,12 +888,12 @@ def split_tunnel_remove(cidr: str) -> None:
     st = raw.setdefault("split_tunnel", {})
     excludes: list[str] = list(st.get("excludes", []))
     if cidr not in excludes:
-        console.print(f"[dim]{cidr} is not in the exclusion list.[/dim]")
+        console.print(f"[muted]{cidr} is not in the exclusion list.[/muted]")
         return
     excludes.remove(cidr)
     st["excludes"] = excludes
     _save_raw_config(raw)
-    console.print(f"[green]✓[/green] Removed {cidr} from split-tunnel excludes.")
+    console.print(f"[ok]✓[/ok] Removed {cidr} from split-tunnel excludes.")
 
 
 @split_tunnel_group.command(name="enable")
@@ -839,9 +902,9 @@ def split_tunnel_enable() -> None:
     raw = _load_raw_config()
     raw.setdefault("split_tunnel", {})["enabled"] = True
     _save_raw_config(raw)
-    console.print("[green]✓[/green] Split tunnel enabled.")
+    console.print("[ok]✓[/ok] Split tunnel enabled.")
     console.print(
-        "[dim]Re-run [bold]vpnctl connect[/bold] for the change to take effect.[/dim]"
+        "[muted]Re-run [heading]vpnctl connect[/heading] for the change to take effect.[/muted]"
     )
 
 
@@ -851,7 +914,7 @@ def split_tunnel_disable() -> None:
     raw = _load_raw_config()
     raw.setdefault("split_tunnel", {})["enabled"] = False
     _save_raw_config(raw)
-    console.print("[green]✓[/green] Split tunnel disabled.")
+    console.print("[ok]✓[/ok] Split tunnel disabled.")
 
 
 def _print_results_table(results) -> None:
@@ -875,7 +938,7 @@ def _print_results_table(results) -> None:
                 "-",
                 "-",
                 "-",
-                f"[red]{r.error}[/red]",
+                f"[bad]{r.error}[/bad]",
             )
         else:
             # The rank is a plain number, and the winner is the bold row. An
@@ -924,7 +987,7 @@ def _dispatch(ctx: click.Context, entry: menu.MenuEntry) -> None:
     """Run one menu entry's command, asking for any value it needs first."""
     command = resolve_action(ctx, entry.action or "")
     if command is None:
-        err_console.print(f"[red]No such command: {entry.action}[/red]")
+        err_console.print(f"[bad]No such command: {entry.action}[/bad]")
         return
 
     kwargs = dict(entry.kwargs)
@@ -954,7 +1017,7 @@ def run_menu(ctx: click.Context) -> int:
             code = run_setup(console)
             if code != 0:
                 return code
-            console.print("\n[dim]press any key for the menu[/dim]")
+            console.print("\n[muted]press any key for the menu[/muted]")
             with menu.raw_mode():
                 menu.read_key()
 
@@ -1000,14 +1063,14 @@ def run_menu(ctx: click.Context) -> int:
                 # A subcommand calling sys.exit must not take the menu with it.
                 if exc.code not in (0, None):
                     err_console.print(
-                        f"[yellow]{entry.action} exited with {exc.code}[/yellow]"
+                        f"[warn]{entry.action} exited with {exc.code}[/warn]"
                     )
             except KeyboardInterrupt:
-                console.print("\n[dim]interrupted[/dim]")
+                console.print("\n[muted]interrupted[/muted]")
             except click.Abort:
-                console.print("\n[dim]cancelled[/dim]")
+                console.print("\n[muted]cancelled[/muted]")
 
-            console.print("\n[dim]press any key to return to the menu[/dim]")
+            console.print("\n[muted]press any key to return to the menu[/muted]")
             with menu.raw_mode():
                 menu.read_key()
 
@@ -1018,7 +1081,7 @@ def run_menu(ctx: click.Context) -> int:
 
     except menu.NotATerminal:
         err_console.print(
-            "[red]vpnctl's menu needs a terminal.[/red] Run a subcommand "
+            "[bad]vpnctl's menu needs a terminal.[/bad] Run a subcommand "
             "directly, or see `vpnctl --help`."
         )
         return 2
