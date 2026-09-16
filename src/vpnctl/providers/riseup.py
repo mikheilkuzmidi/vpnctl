@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Optional
 
 from vpnctl import riseup
+from vpnctl.platform import sudo_prefix
 from vpnctl.probe import run_probe
 from vpnctl.providers.base import (
     DoctorResult,
@@ -204,7 +205,7 @@ class RiseupAdapter(ProviderAdapter):
 
         binary = find_openvpn() or _OPENVPN
         self._process = subprocess.Popen(
-            ["sudo", binary, "--config", str(config_path)],
+            [*sudo_prefix(), binary, "--config", str(config_path)],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -250,7 +251,7 @@ class RiseupAdapter(ProviderAdapter):
             # sudo itself: terminating it does not reach openvpn. Ask sudo to
             # do the killing.
             subprocess.run(
-                ["sudo", "pkill", "-TERM", "-f", f"openvpn --config .*{self._provider}"],
+                [*sudo_prefix(), "pkill", "-TERM", "-f", f"openvpn --config .*{self._provider}"],
                 capture_output=True,
                 text=True,
                 check=False,

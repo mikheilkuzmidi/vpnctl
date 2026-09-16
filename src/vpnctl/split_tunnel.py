@@ -21,10 +21,11 @@ from __future__ import annotations
 
 import ipaddress
 
-import re
 import shutil
 import subprocess
 from typing import Optional
+
+from vpnctl import platform
 
 
 # ---------------------------------------------------------------------------
@@ -32,22 +33,14 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 def get_default_gateway() -> Optional[str]:
-    """Return the current IPv4 default gateway (before the VPN changes it).
+    """The current IPv4 default gateway, before the VPN changes it.
 
-    Uses ``route -n get default`` which is reliable on macOS.
-    Returns None if it cannot be determined.
+    Kept as a name because several callers use it; the platform-specific part
+    now lives in vpnctl.platform, which asks `route` on macOS and `ip` on
+    Linux. `route` is net-tools, absent from most Linux systems, and has no
+    `get` verb even when present.
     """
-    result = subprocess.run(
-        ["route", "-n", "get", "default"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    for line in result.stdout.splitlines():
-        m = re.search(r"gateway:\s+(\S+)", line)
-        if m:
-            return m.group(1)
-    return None
+    return platform.default_gateway()
 
 
 # ---------------------------------------------------------------------------
@@ -117,77 +110,25 @@ def list_warp_excludes() -> list[str]:
 # ---------------------------------------------------------------------------
 
 def add_macos_routes(excludes: list[str], gateway: str) -> None:
-    """Add static host/network routes that bypass the VPN tunnel.
+    """Add static routes that bypass the VPN tunnel.
 
-    For each CIDR in *excludes*, installs a route via *gateway* (the original
-    default gateway captured before the VPN connected).  More-specific routes
-    win over the VPN's 0/0 default route, so these destinations use the plain
-    internet connection.
+    For each CIDR, installs a route via *gateway* (the original default
+    gateway captured before the VPN connected). A longer prefix wins over the
+    VPN's 0.0.0.0/0, so those destinations use the plain connection.
 
-    Requires sudo (wg-quick already runs as root so the child process inherits
-    the right permissions when called from WgCustomAdapter.connect()).
+    Named for macOS because that is all it did originally. The syntax differs
+    per platform and now lives in vpnctl.platform.
     """
-    if not excludes or not gateway:
-        return
-    for cidr in excludes:
-        subprocess.run(
-            ["sudo", "route", "-q", "add", "-net", cidr, gateway],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+    platform.add_host_routes(excludes, gateway)
 
 
 def remove_macos_routes(excludes: list[str]) -> None:
-    """Delete the static routes previously added by add_macos_routes().
+    """Delete the routes add_macos_routes() installed.
 
-    Safe to call even if the routes are already gone (e.g. interface teardown
-    removed them automatically).
+    Safe to call when they are already gone, which is the normal case after
+    an interface teardown removes them itself.
     """
-    if not excludes:
-        return
-    for cidr in excludes:
-        subprocess.run(
-            ["sudo", "route", "-q", "delete", "-net", cidr],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-
-# ---------------------------------------------------------------------------
-# Torrent-only / "no-default-tunnel" helpers
-# ---------------------------------------------------------------------------
-
-def remove_vpn_default_route() -> None:
-    """Delete the 0/0 default route that wg-quick added.
-
-    Called immediately after wg-quick up in torrent-only mode so that normal
-    traffic continues using the physical interface while the WireGuard
-    interface remains available for apps that bind to it explicitly.
-    """
-    subprocess.run(
-        ["sudo", "route", "-q", "delete", "default"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-
-def restore_default_route(gateway: str) -> None:
-    """Re-install the original default gateway after removing the VPN route.
-
-    *gateway* should be the value returned by get_default_gateway() called
-    **before** wg-quick up changed the routing table.
-    """
-    if not gateway:
-        return
-    subprocess.run(
-        ["sudo", "route", "-q", "add", "default", gateway],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    platform.remove_host_routes(excludes)
 
 
 # ---------------------------------------------------------------------------

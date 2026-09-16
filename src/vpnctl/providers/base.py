@@ -64,6 +64,16 @@ class DoctorResult:
 class ProviderAdapter(abc.ABC):
     """Common contract for all VPN provider adapters."""
 
+    #: Whether this provider can work on this operating system at all.
+    #:
+    #: Distinct from "its dependencies are missing". warp-cli does not exist
+    #: for Linux and never will, so reporting it as a missing dependency
+    #: there tells the user to install something uninstallable and makes
+    #: `doctor` exit non-zero for a machine with nothing wrong with it.
+    @classmethod
+    def supported(cls) -> bool:
+        return True
+
     #: Whether this adapter actually carries traffic through a tunnel.
     #:
     #: The "direct" adapter exists to measure the unprotected connection as

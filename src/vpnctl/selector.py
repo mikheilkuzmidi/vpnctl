@@ -37,7 +37,9 @@ def build_providers(cfg: Config) -> list[ProviderAdapter]:
         verify_certificate=cfg.transport.verify_certificate,
     )
     providers: list[ProviderAdapter] = []
-    if cfg.warp_masque.enabled:
+    # A provider that cannot work on this OS is skipped rather than built:
+    # it would otherwise be benchmarked, fail, and be reported as a fault.
+    if cfg.warp_masque.enabled and WarpMasqueAdapter.supported():
         providers.append(WarpMasqueAdapter(excludes=excludes))
     if cfg.warp_wireguard.enabled:
         providers.append(

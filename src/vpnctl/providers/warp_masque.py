@@ -20,6 +20,7 @@ from vpnctl.providers.base import (
     ProviderAdapter,
     ProviderStatus,
 )
+from vpnctl.platform import IS_MACOS
 from vpnctl.probe import run_probe
 from vpnctl.split_tunnel import apply_warp_excludes, remove_warp_excludes
 
@@ -41,6 +42,13 @@ def _run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
 
 
 class WarpMasqueAdapter(ProviderAdapter):
+    """MASQUE is Cloudflare's own transport, so it needs their client."""
+
+    @classmethod
+    def supported(cls) -> bool:
+        # warp-cli ships for macOS and Windows only. On Linux this provider
+        # is not broken, it is inapplicable.
+        return IS_MACOS
     def __init__(self, excludes: list[str] | None = None) -> None:
         self._excludes: list[str] = excludes or []
 

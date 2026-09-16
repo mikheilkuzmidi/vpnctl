@@ -26,6 +26,7 @@ from vpnctl.providers.base import (
     ProviderAdapter,
     ProviderStatus,
 )
+from vpnctl.platform import dns_is_manageable, set_resolver, sudo_prefix
 from vpnctl.probe import run_probe
 from vpnctl.transports import DirectTransport, Transport, TransportError
 from vpnctl.split_tunnel import (
@@ -155,7 +156,11 @@ class WgCustomAdapter(ProviderAdapter):
         return self._build_conf(self._read_private_key(), with_dns=with_dns)
 
     def _write_tmp_conf(self) -> Path:
-        conf = self.render_config()
+        # Ask for the DNS line only where wg-quick can honour it. Where it
+        # cannot, connect() installs the resolver itself once the tunnel is
+        # up; asking anyway means wg-quick fails and removes the interface,
+        # so the tunnel never comes up at all.
+        conf = self.render_config(with_dns=dns_is_manageable())
         tmp = Path(tempfile.gettempdir()) / f"{self._interface}.conf"
         tmp.write_text(conf)
         tmp.chmod(0o600)
@@ -172,7 +177,7 @@ class WgCustomAdapter(ProviderAdapter):
             value = name_file.read_text().strip()
         except PermissionError:
             result = subprocess.run(
-                ["sudo", "-n", "cat", str(name_file)],
+                [*sudo_prefix(noninteractive=True), "cat", str(name_file)],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -191,7 +196,7 @@ class WgCustomAdapter(ProviderAdapter):
         )
         if result.returncode != 0 and "Permission denied" in result.stderr:
             result = subprocess.run(
-                ["sudo", "-n", _WG, "show", interface],
+                [*sudo_prefix(noninteractive=True), _WG, "show", interface],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -228,7 +233,7 @@ class WgCustomAdapter(ProviderAdapter):
         )
         if result.returncode != 0 and "Permission denied" in result.stderr:
             result = subprocess.run(
-                ["sudo", "-n", _WG, "show", interface, field],
+                [*sudo_prefix(noninteractive=True), _WG, "show", interface, field],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -264,7 +269,7 @@ class WgCustomAdapter(ProviderAdapter):
         real_interface = self._resolve_real_interface()
         tmp_conf = self._tmp_conf or self._write_tmp_conf()
         down_result = subprocess.run(
-            ["sudo", _WG_QUICK, "down", str(tmp_conf)],
+            [*sudo_prefix(), _WG_QUICK, "down", str(tmp_conf)],
             capture_output=True,
             text=True,
             check=False,
@@ -276,7 +281,7 @@ class WgCustomAdapter(ProviderAdapter):
         if real_interface:
             paths.append(f"/var/run/wireguard/{real_interface}.sock")
         subprocess.run(
-            ["sudo", "rm", "-f", *paths],
+            [*sudo_prefix(), "rm", "-f", *paths],
             capture_output=True,
             text=True,
             check=False,
@@ -319,7 +324,7 @@ class WgCustomAdapter(ProviderAdapter):
 
         self._tmp_conf = self._write_tmp_conf()
         result = subprocess.run(
-            ["sudo", _WG_QUICK, "up", str(self._tmp_conf)],
+            [*sudo_prefix(), _WG_QUICK, "up", str(self._tmp_conf)],
             capture_output=True,
             text=True,
         )
@@ -328,7 +333,7 @@ class WgCustomAdapter(ProviderAdapter):
         ):
             self._cleanup_stale_mapping()
             result = subprocess.run(
-                ["sudo", _WG_QUICK, "up", str(self._tmp_conf)],
+                [*sudo_prefix(), _WG_QUICK, "up", str(self._tmp_conf)],
                 capture_output=True,
                 text=True,
             )
@@ -362,6 +367,11 @@ class WgCustomAdapter(ProviderAdapter):
             if self._latest_handshake(interface) is not None:
                 if self._excludes and self._pre_vpn_gateway:
                     add_macos_routes(self._excludes, self._pre_vpn_gateway)
+                # The other half of the DNS decision in _write_tmp_conf: the
+                # config carries no DNS line here, so without this the tunnel
+                # is up and name resolution still points at the local network.
+                if self._dns and not dns_is_manageable():
+                    set_resolver(self._dns)
                 return
             time.sleep(_POLL_INTERVAL)
 
@@ -396,7 +406,7 @@ class WgCustomAdapter(ProviderAdapter):
 
         if self._tmp_conf and self._tmp_conf.exists():
             subprocess.run(
-                ["sudo", _WG_QUICK, "down", str(self._tmp_conf)],
+                [*sudo_prefix(), _WG_QUICK, "down", str(self._tmp_conf)],
                 capture_output=True,
                 text=True,
                 check=False,
