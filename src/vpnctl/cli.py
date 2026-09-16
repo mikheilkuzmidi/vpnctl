@@ -22,6 +22,7 @@ from rich.table import Table
 
 from vpnctl.bootstrap import bootstrap_wireguard_vps
 from vpnctl.tailscale_bootstrap import bootstrap_tailscale_exit_node
+from vpnctl import menu
 from vpnctl.config import config_path, load_config
 from vpnctl.docker_smoke import run_docker_smoke
 from vpnctl.providers.base import ProviderStatus
@@ -51,10 +52,17 @@ def _status_badge(s: ProviderStatus) -> str:
     return mapping.get(s, str(s))
 
 
-@click.group()
+@click.group(invoke_without_command=True)
 @click.version_option(package_name="vpnctl")
-def main() -> None:
-    """Zero-cost VPN selector for macOS."""
+@click.pass_context
+def main(ctx: click.Context) -> None:
+    """Zero-cost VPN selector for macOS.
+
+    Run with no arguments for the menu; every action is also a subcommand, so
+    scripts and the menu drive exactly the same code.
+    """
+    if ctx.invoked_subcommand is None:
+        ctx.exit(run_menu(ctx))
 
 
 @main.command()
@@ -105,10 +113,24 @@ def benchmark() -> None:
         "[dim](this connects each one in sequence)[/dim]"
     )
 
-    def _log(msg: str) -> None:
-        console.print(f"  {msg}")
+    # A probe pings three hosts and then measures throughput, which takes tens
+    # of seconds. This used to print one static "probing…" line and then say
+    # nothing at all until the table appeared, so the command looked hung. The
+    # spinner carries the current phase; lines that are findings rather than
+    # progress are printed permanently above it.
+    def _is_finding(msg: str) -> bool:
+        return "rtt=" in msg or "failed" in msg
 
-    results = run_benchmark(providers, status_cb=_log)
+    with console.status("[dim]starting…[/dim]", spinner="dots") as spinner:
+
+        def _log(msg: str) -> None:
+            if _is_finding(msg):
+                console.print(f"  {msg}")
+            else:
+                spinner.update(f"[dim]{msg}[/dim]")
+
+        results = run_benchmark(providers, status_cb=_log)
+
     save_results(results)
 
     console.print()
@@ -613,3 +635,65 @@ def _print_results_table(results) -> None:
             )
 
     console.print(table)
+
+
+# --- interactive menu -------------------------------------------------------
+
+_MENU: list[tuple[str, str, str]] = [
+    ("Check dependencies", "doctor", "Every provider's prerequisites, with hints for what is missing"),
+    ("Benchmark providers", "benchmark", "Connect each in turn, measure it, and rank them"),
+    ("Connect the best provider", "connect", "Uses the last benchmark; runs one first if there is none"),
+    ("Live monitor", "tui", "RTT, jitter, loss and throughput as they change"),
+    ("Show status", "status", "Current tunnel and the last benchmark result"),
+    ("Split tunnel", "split-tunnel-list", "The CIDRs that bypass the tunnel"),
+    ("Disconnect", "disconnect", "Tear down any active tunnel"),
+    ("Exit", "exit", ""),
+]
+
+
+def run_menu(ctx: click.Context) -> int:
+    """Drive the tool from an arrow-key menu.
+
+    Every entry invokes the same command a user could have typed, so there is
+    one implementation of each action rather than a menu copy that drifts.
+    """
+    try:
+        while True:
+            with menu.raw_mode():
+                choice = menu.select(
+                    console,
+                    "vpnctl",
+                    [(label, hint) for label, _, hint in _MENU],
+                    subtitle="zero-cost VPN selector",
+                )
+            if choice is None:
+                return 0
+
+            _, action, _ = _MENU[choice]
+            if action == "exit":
+                console.clear()
+                return 0
+
+            console.clear()
+            try:
+                if action == "split-tunnel-list":
+                    ctx.invoke(split_tunnel_list)
+                else:
+                    ctx.invoke(main.get_command(ctx, action))
+            except SystemExit as exc:
+                # A subcommand calling sys.exit must not take the menu with it.
+                if exc.code not in (0, None):
+                    err_console.print(f"[yellow]{action} exited with {exc.code}[/yellow]")
+            except KeyboardInterrupt:
+                console.print("\n[dim]interrupted[/dim]")
+
+            console.print("\n[dim]press any key to return to the menu[/dim]")
+            with menu.raw_mode():
+                menu.read_key()
+
+    except menu.NotATerminal:
+        err_console.print(
+            "vpnctl's menu needs a terminal. Run a subcommand directly, "
+            "or see `vpnctl --help`."
+        )
+        return 2
