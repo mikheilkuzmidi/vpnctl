@@ -45,9 +45,19 @@ class BypassResult:
 
 
 def _run(args: list[str], *, timeout: float = 600.0) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        args, capture_output=True, text=True, check=False, timeout=timeout
-    )
+    """Run a docker command, turning a timeout into a value.
+
+    TimeoutExpired is not a BypassError, and the CLI catches only the
+    latter, so an overrunning build surfaced as a traceback.
+    """
+    try:
+        return subprocess.run(
+            args, capture_output=True, text=True, check=False, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            args, 124, "", f"timed out after {timeout:.0f}s"
+        )
 
 
 def _require_docker() -> None:

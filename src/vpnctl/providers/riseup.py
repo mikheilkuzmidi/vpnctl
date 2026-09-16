@@ -16,6 +16,7 @@ instead would report success while the TLS handshake was still in progress.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -65,7 +66,10 @@ _ALLOWED_OPTIONS = frozenset(
         "sndbuf",
         "tls-cipher",
         "tls-version-min",
-        "verb",
+        # "verb" is deliberately absent. The provider's own config can set
+        # it, OpenVPN logs key material at debug levels, and connect()
+        # captures stdout and puts the tail in an exception message that is
+        # printed to the user.
     }
 )
 
@@ -200,8 +204,11 @@ class RiseupAdapter(ProviderAdapter):
 
         self._workdir = tempfile.TemporaryDirectory(prefix="vpnctl-openvpn-")
         config_path = Path(self._workdir.name) / f"{self._provider}.conf"
-        config_path.write_text(config)
-        config_path.chmod(0o600)
+        # 0600 at creation. The client private key is inline in this file,
+        # and write_text would make it 0644 first.
+        fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(config)
 
         binary = find_openvpn() or _OPENVPN
         self._process = subprocess.Popen(
@@ -243,31 +250,55 @@ class RiseupAdapter(ProviderAdapter):
         self._process = None
 
     def disconnect(self) -> None:
-        if self._process is None:
-            self._cleanup()
-            return
-        if self._process.poll() is None:
+        """Tear the tunnel down, whether or not this process started it."""
+        pids = self._running_pids()
+        if pids:
             # openvpn runs under sudo, so the child this process can see is
-            # sudo itself: terminating it does not reach openvpn. Ask sudo to
-            # do the killing.
+            # sudo itself: terminating it does not reach openvpn. Signal the
+            # pids directly, which also works for a tunnel this process did
+            # not start. The pattern is anchored on the config filename
+            # rather than the bare provider name, so it cannot match more
+            # than it means to.
             subprocess.run(
-                [*sudo_prefix(), "pkill", "-TERM", "-f", f"openvpn --config .*{self._provider}"],
+                [*sudo_prefix(), "kill", "-TERM", *pids],
                 capture_output=True,
                 text=True,
                 check=False,
             )
+        if self._process is not None and self._process.poll() is None:
             try:
                 self._process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 self._process.kill()
         self._cleanup()
 
+    def _running_pids(self) -> list[str]:
+        """The openvpn processes belonging to this provider, from the system.
+
+        Not from self._process. Each CLI invocation builds fresh adapters, so
+        an instance variable is always None in the process that runs
+        `vpnctl disconnect`: status reported DISCONNECTED for a live tunnel,
+        disconnect printed "no tunnel is up" and did nothing, and there was
+        no way to tear it down with the tool at all.
+        """
+        found = subprocess.run(
+            ["pgrep", "-f", f"openvpn --config .*/{self._provider}[.]conf"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return [line for line in found.stdout.split() if line.isdigit()]
+
     def status(self) -> ProviderStatus:
-        if self._process is None:
-            return ProviderStatus.DISCONNECTED
-        if self._process.poll() is None:
+        if self._process is not None and self._process.poll() is None:
             return ProviderStatus.CONNECTED
-        return ProviderStatus.DISCONNECTED
+        # Fall back to asking the system, so a tunnel started by an earlier
+        # invocation is still visible.
+        return (
+            ProviderStatus.CONNECTED
+            if self._running_pids()
+            else ProviderStatus.DISCONNECTED
+        )
 
     def probe(self, on_progress: Optional[ProgressFn] = None) -> ProbeResult:
         return run_probe(self._provider, on_progress)

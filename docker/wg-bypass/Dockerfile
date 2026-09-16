@@ -5,7 +5,12 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 ARG WSTUNNEL_VERSION=10.7.1
-ARG TARGETARCH=arm64
+# No default. BuildKit injects this; a classic build does not, and a silent
+# fallback meant an amd64 host fetched the arm64 binary and the container
+# died with "exec format error" deep inside the test, which surfaced as
+# "the transport did not get through": a wrong answer to the only question
+# the harness exists to answer.
+ARG TARGETARCH
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

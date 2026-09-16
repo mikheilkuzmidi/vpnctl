@@ -28,8 +28,13 @@ def test_build_transport_knows_both_kinds():
     assert build_transport("direct", WstunnelSettings()).kind == "direct"
     assert build_transport("", WstunnelSettings()).kind == "direct"
     assert build_transport("wstunnel", WstunnelSettings(server="wss://h:443")).kind == "wstunnel"
-    with pytest.raises(TransportError, match="Unknown transport"):
-        build_transport("obfs9000", WstunnelSettings())
+    # An unrecognised name falls back to direct and reports itself in doctor,
+    # rather than raising: build_providers calls this, so every command
+    # including doctor used to die on a typo in the config file.
+    unknown = build_transport("obfs9000", WstunnelSettings())
+    assert unknown.kind == "obfs9000"
+    assert unknown.start("203.0.113.10:51820") == "203.0.113.10:51820"
+    assert any("unknown transport" in issue for issue in unknown.doctor())
 
 
 def test_wstunnel_needs_a_server():

@@ -15,6 +15,7 @@ import stat
 import subprocess
 import tempfile
 import time
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -155,15 +156,36 @@ class WgCustomAdapter(ProviderAdapter):
         """
         return self._build_conf(self._read_private_key(), with_dns=with_dns)
 
+    def _runtime_dir(self) -> Path:
+        """A private directory for the rendered config.
+
+        Not the shared temp directory. The rendered config carries the
+        long-term private key, and it has to outlive the connect so a later
+        `vpnctl disconnect` can hand it back to wg-quick, so on Linux it was
+        sitting at a predictable path in a world-writable /tmp for the whole
+        life of the tunnel. A local user who pre-created that path would own
+        the file the key was written into.
+        """
+        from vpnctl.config import config_path
+
+        directory = config_path().parent / "run"
+        directory.mkdir(parents=True, exist_ok=True)
+        directory.chmod(0o700)
+        return directory
+
     def _write_tmp_conf(self) -> Path:
         # Ask for the DNS line only where wg-quick can honour it. Where it
         # cannot, connect() installs the resolver itself once the tunnel is
         # up; asking anyway means wg-quick fails and removes the interface,
         # so the tunnel never comes up at all.
         conf = self.render_config(with_dns=dns_is_manageable())
-        tmp = Path(tempfile.gettempdir()) / f"{self._interface}.conf"
-        tmp.write_text(conf)
-        tmp.chmod(0o600)
+        tmp = self._runtime_dir() / f"{self._interface}.conf"
+        # Created 0600, not created then chmod-ed. write_text makes a 0644
+        # file first, and a world readable window, however brief, is still a
+        # window: the same reasoning the WARP device cache already used.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(conf)
         return tmp
 
     def _alias_name_file(self) -> Path:

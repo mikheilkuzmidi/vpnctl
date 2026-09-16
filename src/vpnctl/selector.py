@@ -83,12 +83,20 @@ def run_benchmark(
 ) -> list[ProbeResult]:
     """Sequentially benchmark each provider.
 
-    For each provider:
-      1. disconnect any active tunnel first
-      2. prepare + connect
-      3. probe
-      4. disconnect
-      5. record result
+    For each provider: connect it, probe it, disconnect it, record the result.
+
+    Two things about the teardown, both learned the hard way.
+
+    Every tunnel is taken down before the run starts, not just the one about
+    to be measured. Otherwise a tunnel that was already up kept the default
+    route while the first providers were probed, so their numbers were
+    measured through it.
+
+    And the teardown happens whether the connect succeeded or not. A connect
+    that timed out used to be left alone, and a provider that came up a
+    moment after its timeout stayed up for the rest of the run: every
+    remaining provider was then probed through that tunnel, so the whole
+    ranking, and the winner connect would later use, was measured wrong.
 
     status_cb(msg: str) is called with progress messages if provided.
     """
@@ -97,21 +105,30 @@ def run_benchmark(
         if status_cb:
             status_cb(msg)
 
+    def _teardown(adapter: ProviderAdapter) -> None:
+        try:
+            adapter.disconnect()
+        except Exception as exc:
+            _log(f"[{adapter.provider_id}] could not disconnect: {exc}")
+
     results: list[ProbeResult] = []
+
+    _log("clearing any active tunnel…")
+    for adapter in providers:
+        if not adapter.is_control:
+            _teardown(adapter)
 
     for adapter in providers:
         pid = adapter.provider_id
-        _log(f"[{pid}] disconnecting any active tunnel…")
-        try:
-            adapter.disconnect()
-        except Exception:
-            pass
 
         _log(f"[{pid}] connecting…")
         try:
             adapter.connect()
         except Exception as exc:
             _log(f"[{pid}] connect failed: {exc}")
+            # Tear down regardless: a provider that comes up just after its
+            # own timeout would otherwise carry every later measurement.
+            _teardown(adapter)
             results.append(
                 ProbeResult(
                     provider_id=pid,
@@ -125,16 +142,14 @@ def run_benchmark(
             )
             continue
 
-        _log(f"[{pid}] probing…")
-        result = adapter.probe(lambda phase: _log(f"[{pid}] {phase}"))
-        results.append(result)
-        _log(f"[{pid}] {result}")
-
-        _log(f"[{pid}] disconnecting…")
         try:
-            adapter.disconnect()
-        except Exception:
-            pass
+            _log(f"[{pid}] probing…")
+            result = adapter.probe(lambda phase: _log(f"[{pid}] {phase}"))
+            results.append(result)
+            _log(f"[{pid}] {result}")
+        finally:
+            _log(f"[{pid}] disconnecting…")
+            _teardown(adapter)
 
     results.sort(key=lambda r: r.score, reverse=True)
     return results
@@ -186,6 +201,12 @@ def should_switch(
     else:
         score_gain_pct = 100.0
 
+    # A candidate has to be better overall, not merely quicker. Or-ing these
+    # meant a provider the tool's own scoring rated three times worse, on
+    # jitter, loss and throughput, was switched to because its median RTT
+    # happened to be lower.
+    if candidate.score < current.score:
+        return False
     return (
         rtt_gain >= min_rtt_improvement_ms
         or score_gain_pct >= min_score_improvement_pct

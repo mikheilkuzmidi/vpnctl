@@ -20,6 +20,7 @@ import click
 from rich import box
 from rich.console import Console
 from rich.table import Table
+from rich.text import Text
 
 from vpnctl.bootstrap import bootstrap_wireguard_vps
 from vpnctl.tailscale_bootstrap import bootstrap_tailscale_exit_node
@@ -179,7 +180,7 @@ def benchmark() -> None:
     save_results(results)
 
     console.print()
-    _print_results_table(results)
+    _print_results_table(results, control_provider_ids(providers))
 
     winner = pick_winner(results, controls=control_provider_ids(providers))
     if winner:
@@ -208,6 +209,16 @@ def connect(provider: Optional[str]) -> None:
         target = next(
             (p for p in providers if p.provider_id == provider), None
         )
+        if target is not None and target.is_control:
+            # The control carries no traffic. Naming it used to disconnect
+            # the real tunnel, run a no-op, and report success: a one command
+            # way to quietly unprotect the machine and be told it worked.
+            err_console.print(
+                f"[bad]{provider} is not a VPN.[/bad] It measures the plain "
+                "connection as the control every tunnel is ranked against. "
+                "Use `vpnctl disconnect` to stop using a tunnel."
+            )
+            sys.exit(2)
         if target is None:
             err_console.print(
                 f"Unknown provider '{provider}'. "
@@ -289,9 +300,13 @@ def connect(provider: Optional[str]) -> None:
             rows.append(("last handshake", f"{age}s ago"))
         console.print()
         render.rows(console, rows)
-    except RuntimeError as exc:
-        err_console.print(f"Connect failed: {exc}")
-        console.print("Rolling back - disconnecting…")
+    except Exception as exc:
+        # Not just RuntimeError. warp-cli raises CalledProcessError, and the
+        # WARP registration raises httpx errors on exactly the networks this
+        # tool exists for; either escaped, skipped the rollback below, and
+        # killed the menu.
+        err_console.print(Text("Connect failed: " + str(exc)), style="bad")
+        console.print("Rolling back, disconnecting…")
         try:
             target.disconnect()
         except Exception:
@@ -364,7 +379,7 @@ def status() -> None:
     results = load_results()
     if results:
         console.print("\n[heading]Last benchmark[/heading]")
-        _print_results_table(results)
+        _print_results_table(results, control_provider_ids(providers))
     else:
         console.print(
             "\n[muted]No benchmark results yet. Run:[/muted] vpnctl benchmark"
@@ -409,6 +424,7 @@ def disconnect() -> None:
     providers = build_providers(cfg)
 
     torn_down: list[str] = []
+    failed: list[tuple[str, str]] = []
     for adapter in providers:
         # The control is not a tunnel. Its status() always reports connected,
         # because the plain connection is always there, so a loop over every
@@ -418,10 +434,29 @@ def disconnect() -> None:
         # had happened.
         if adapter.is_control:
             continue
-        if adapter.status() == ProviderStatus.CONNECTED:
-            console.print(f"Disconnecting [heading]{adapter.provider_id}[/heading]…")
+        try:
+            if adapter.status() != ProviderStatus.CONNECTED:
+                continue
+            console.print(
+                f"Disconnecting [heading]{adapter.provider_id}[/heading]…"
+            )
             adapter.disconnect()
             torn_down.append(adapter.provider_id)
+        except Exception as exc:
+            # Tearing one tunnel down must not stop the others, and must not
+            # take the menu with it. wg_custom.disconnect() rebuilds its
+            # config to run wg-quick down, so a missing or unreadable key
+            # file made this raise with a message about key permissions,
+            # which explains nothing about a failed teardown.
+            failed.append((adapter.provider_id, str(exc)))
+
+    if failed:
+        for pid, why in failed:
+            err_console.print(Text(f"{pid} could not be torn down: {why}"), style="bad")
+        err_console.print(
+            "[warn]It may still be carrying traffic.[/warn] "
+            "`sudo wg-quick down <interface>` removes it by hand."
+        )
 
     if torn_down:
         render.verdict(
@@ -541,7 +576,7 @@ def transport_test(rebuild: bool) -> None:
         try:
             result = run_bypass_test(rebuild=rebuild)
         except BypassError as exc:
-            err_console.print(f"[bad]{exc}[/bad]")
+            err_console.print(Text(str(exc)), style="bad")
             sys.exit(1)
 
     def mark(ok: bool) -> str:
@@ -562,7 +597,7 @@ def transport_test(rebuild: bool) -> None:
         )
     else:
         err_console.print("\n[bad]The transport did not get through.[/bad]")
-        err_console.print(f"[muted]{result.output[-1200:]}[/muted]")
+        err_console.print(Text(result.output[-1200:]), style="muted")
         sys.exit(1)
 
 
@@ -599,13 +634,13 @@ def docker_smoke_test(provider: str, rebuild: bool) -> None:
         try:
             result = run_docker_smoke(cfg, provider_id=provider, rebuild=rebuild)
         except NotConfigured as exc:
-            err_console.print(f"[warn]{exc}[/warn]")
+            err_console.print(Text(str(exc)), style="warn")
             sys.exit(2)
         except NoHandshake as exc:
-            err_console.print(f"[bad]No handshake.[/bad] {exc}")
+            err_console.print(Text("No handshake. " + str(exc)), style="bad")
             sys.exit(1)
         except RuntimeError as exc:
-            err_console.print(f"[bad]{exc}[/bad]")
+            err_console.print(Text(str(exc)), style="bad")
             sys.exit(1)
 
     rows = [
@@ -700,7 +735,7 @@ def bootstrap_wireguard_vps_cmd(
         err_console.print(f"stderr: {stderr}")
         sys.exit(exc.returncode or 1)
     except RuntimeError as exc:
-        err_console.print(f"[bad]{exc}[/bad]")
+        err_console.print(Text(str(exc)), style="bad")
         sys.exit(1)
 
     console.print("[ok]✓[/ok] VPS bootstrap complete.")
@@ -774,7 +809,7 @@ def bootstrap_tailscale_exit_node_cmd(
         err_console.print(f"stderr: {stderr}")
         sys.exit(exc.returncode or 1)
     except RuntimeError as exc:
-        err_console.print(f"[bad]{exc}[/bad]")
+        err_console.print(Text(str(exc)), style="bad")
         sys.exit(1)
 
     console.print("[ok]✓[/ok] Tailscale installed and configured on VPS.")
@@ -917,7 +952,7 @@ def split_tunnel_disable() -> None:
     console.print("[ok]✓[/ok] Split tunnel disabled.")
 
 
-def _print_results_table(results) -> None:
+def _print_results_table(results, controls: Optional[set] = None) -> None:
     table = Table(box=box.SIMPLE_HEAD)
     table.add_column("Rank", style="dim", width=5)
     table.add_column("Provider", style="bold")
@@ -928,7 +963,24 @@ def _print_results_table(results) -> None:
     table.add_column("DL Mbps", justify="right")
     table.add_column("Status")
 
+    controls = controls or set()
     for i, r in enumerate(results, 1):
+        if r.provider_id in controls:
+            # The control is not a candidate. It usually scores highest,
+            # having no encryption or extra hop to pay for, so giving it the
+            # winner's bold and a rank presented the one option offering no
+            # protection as the thing to choose.
+            table.add_row(
+                "[muted]-[/muted]",
+                r.provider_id,
+                f"{r.score:.2f}" if r.ok else "-",
+                f"{r.median_rtt_ms:.1f}" if r.ok else "-",
+                f"{r.jitter_ms:.1f}" if r.ok else "-",
+                f"{r.loss_pct:.1f}" if r.ok else "-",
+                f"{r.throughput_mbps:.2f}" if r.ok else "-",
+                "[muted]no tunnel, measured as the control[/muted]",
+            )
+            continue
         if not r.ok:
             table.add_row(
                 str(i),
@@ -987,7 +1039,7 @@ def _dispatch(ctx: click.Context, entry: menu.MenuEntry) -> None:
     """Run one menu entry's command, asking for any value it needs first."""
     command = resolve_action(ctx, entry.action or "")
     if command is None:
-        err_console.print(f"[bad]No such command: {entry.action}[/bad]")
+        err_console.print(Text(f"No such command: {entry.action}"), style="bad")
         return
 
     kwargs = dict(entry.kwargs)

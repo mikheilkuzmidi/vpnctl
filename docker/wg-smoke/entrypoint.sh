@@ -81,4 +81,7 @@ else
 fi
 
 echo "[smoke] ping"
-ping -c 3 1.1.1.1
+# Not a pass criterion: plenty of VPN egresses drop ICMP, and this
+# is the last command under set -e, so its status was the
+# container's and a working tunnel was reported as a failure.
+ping -c 3 1.1.1.1 || true

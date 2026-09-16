@@ -43,7 +43,19 @@ class _WinCounter:
 
 
 def _find_active(providers: list[ProviderAdapter]) -> Optional[ProviderAdapter]:
+    """The tunnel that is currently up, if any.
+
+    Controls are skipped. The control's status() always reports connected,
+    because the plain connection is always there, so without this the watch
+    loop decided the unprotected path was the active tunnel: it then probed
+    that instead of a tunnel, compared every candidate against it, and since
+    the plain connection is normally the fastest thing on the list it
+    concluded no tunnel was worth connecting. It would tear down whatever you
+    had at the first benchmark and never bring anything back.
+    """
     for p in providers:
+        if p.is_control:
+            continue
         if p.status() == ProviderStatus.CONNECTED:
             return p
     return None
@@ -115,16 +127,28 @@ def run_watch(
 
             winner = pick_winner(results, controls=control_provider_ids(providers))
             if winner is None:
-                _log("All providers failed - staying put.")
+                # The benchmark disconnected everything to run, so "staying
+                # put" described the opposite of what had happened.
+                _log(
+                    "No provider worked. Nothing is connected, so this "
+                    "machine is not protected."
+                )
                 time.sleep(30)
                 continue
 
             active = _find_active(providers)
             if active is None:
                 _log(f"No active tunnel; connecting winner: {winner.provider_id}")
-                _connect(winner.provider_id, providers, _log)
-                current_pid = winner.provider_id
-                current_result = winner
+                if _connect(winner.provider_id, providers, _log):
+                    current_pid = winner.provider_id
+                    current_result = winner
+                else:
+                    # Do not adopt a provider that failed to come up. Taking
+                    # the winner's measurements as the live baseline meant
+                    # every later comparison was against numbers never
+                    # measured on the path the machine was actually using.
+                    current_pid = None
+                    current_result = None
                 win_counters.clear()
                 time.sleep(30)
                 continue
@@ -156,9 +180,16 @@ def run_watch(
                             active.disconnect()
                         except Exception:
                             pass
-                        _connect(pid, providers, _log)
-                        current_pid = pid
-                        current_result = winner
+                        if _connect(pid, providers, _log):
+                            current_pid = pid
+                            current_result = winner
+                        else:
+                            # The old tunnel is already down and the new one
+                            # did not come up, so the machine is unprotected
+                            # and the loop must know it rather than believe
+                            # it switched.
+                            current_pid = None
+                            current_result = None
                         win_counters.clear()
                     else:
                         _log(
@@ -203,13 +234,21 @@ def _connect(
     pid: str,
     providers: list[ProviderAdapter],
     log_cb,
-) -> None:
+) -> bool:
+    """Connect one provider, and say whether it worked.
+
+    It used to swallow the failure and return nothing, so callers adopted the
+    provider either way and the loop's idea of what was connected diverged
+    from what actually was.
+    """
     adapter = _find_by_id(providers, pid)
     if adapter is None:
         log_cb(f"[connect] unknown provider: {pid}")
-        return
+        return False
     try:
         adapter.connect()
         log_cb(f"[connect] {pid} connected")
+        return True
     except Exception as exc:
         log_cb(f"[connect] {pid} failed: {exc}")
+        return False

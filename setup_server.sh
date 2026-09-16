@@ -45,10 +45,16 @@ $SUDO chmod 700 "$WG_DIR"
 
 # Keys are generated once. Regenerating them would silently invalidate every
 # client already configured against this server.
+# Keys are generated once, but the public half is derived whenever it is
+# missing. Gating both on the private key meant a run that died between the
+# two steps left the script aborting under set -e on every later attempt,
+# with no way to recover, despite the header promising it is re-runnable.
 if [ ! -s "$SERVER_KEY" ]; then
   umask 077
   wg genkey | $SUDO tee "$SERVER_KEY" >/dev/null
   $SUDO chmod 600 "$SERVER_KEY"
+fi
+if [ ! -s "$SERVER_PUB" ]; then
   $SUDO sh -c "wg pubkey < '$SERVER_KEY' > '$SERVER_PUB'"
 fi
 
@@ -56,7 +62,11 @@ SERVER_PRIVATE="$($SUDO cat "$SERVER_KEY")"
 SERVER_PUBLIC="$($SUDO cat "$SERVER_PUB")"
 
 # The interface traffic leaves by, whatever it is called on this host.
-EGRESS_IF="$(ip -4 route show default | awk '{print $5; exit}')"
+# Read the word after "dev", not field five. On a host whose default route
+# is "default dev eth0 scope link", field five is the word "scope", which
+# then went into the MASQUERADE rule and made wg-quick abort on every start.
+EGRESS_IF="$(ip -4 route show default \
+  | awk '{for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i+1); exit } }')"
 EGRESS_IF="${EGRESS_IF:-eth0}"
 
 $SUDO tee "$WG_CONF" >/dev/null <<CONF
@@ -90,12 +100,17 @@ if [ "$WITH_WSTUNNEL" = "yes" ]; then
 
   if [ -n "$WS_ARCH" ]; then
     if [ ! -x /usr/local/bin/wstunnel ]; then
+      # Into a private directory, not a predictable path in a shared /tmp:
+      # curl runs unprivileged and tar ran as root, so a local user who
+      # pre-created that path chose what root extracted into /usr/local/bin.
+      STAGE="$(mktemp -d)"
+      chmod 700 "$STAGE"
+      trap 'rm -rf "$STAGE"' EXIT
       curl -fsSL \
         "https://github.com/erebe/wstunnel/releases/download/v${WSTUNNEL_VERSION}/wstunnel_${WSTUNNEL_VERSION}_linux_${WS_ARCH}.tar.gz" \
-        -o /tmp/wstunnel.tar.gz
-      $SUDO tar -xzf /tmp/wstunnel.tar.gz -C /usr/local/bin wstunnel
-      $SUDO chmod +x /usr/local/bin/wstunnel
-      rm -f /tmp/wstunnel.tar.gz
+        -o "$STAGE/wstunnel.tar.gz"
+      tar -xzf "$STAGE/wstunnel.tar.gz" -C "$STAGE" wstunnel
+      $SUDO install -m 0755 -o root -g root "$STAGE/wstunnel" /usr/local/bin/wstunnel
     fi
 
     # --restrict-to is not optional. Without it the relay will forward to any
@@ -110,13 +125,25 @@ Wants=network-online.target
 ExecStart=/usr/local/bin/wstunnel server --restrict-to 127.0.0.1:${WG_PORT} wss://0.0.0.0:443
 Restart=always
 RestartSec=2
+# Without a burst limit an always-restart unit crash loops unbounded.
+StartLimitBurst=5
+StartLimitIntervalSec=60
 DynamicUser=yes
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=yes
-PrivateTmp=yes
+# DynamicUser already implies ProtectSystem, ProtectHome and PrivateTmp.
+# What a public facing daemon actually wants, and did not have:
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
 
 [Install]
 WantedBy=multi-user.target

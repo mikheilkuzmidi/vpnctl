@@ -34,6 +34,8 @@ from typing import Any, Optional
 
 import httpx
 
+from vpnctl import validate
+
 # The API is versioned in its path, and it is strict about it: an older
 # version string plus a missing client-version header is answered with
 # 429 Too Many Requests rather than an explanatory error, which is what makes
@@ -198,18 +200,45 @@ def register() -> WarpDevice:
     endpoint = peer.get("endpoint") or {}
     addresses = (config.get("interface") or {}).get("addresses") or {}
 
-    return WarpDevice(
-        device_id=device_id,
-        token=token,
-        private_key=private_key,
-        public_key=public_key,
-        address_v4=addresses.get("v4", ""),
-        address_v6=addresses.get("v6", ""),
-        peer_public_key=peer.get("public_key", ""),
-        endpoint_host=endpoint.get("host", ""),
-        endpoint_v4=endpoint.get("v4", ""),
-        ports=[int(p) for p in endpoint.get("ports") or [2408]],
-    )
+    # Validated here, at the boundary. These fields end up in a wg-quick
+    # config, and wg-quick honours PostUp as a root shell command, so a value
+    # carrying a newline could add directives of its own. Reject rather than
+    # escape: an address that is not an address is not something to clean up
+    # and use anyway.
+    try:
+        return WarpDevice(
+            device_id=validate._no_control_characters(device_id, "device id"),
+            token=validate._no_control_characters(token, "token"),
+            private_key=validate.wireguard_key(private_key, "private key"),
+            public_key=validate.wireguard_key(public_key, "public key"),
+            address_v4=validate.ip_interface(
+                addresses.get("v4", ""), "assigned address"
+            ),
+            address_v6=validate.ip_interface(
+                addresses.get("v6", ""), "assigned IPv6 address"
+            )
+            if addresses.get("v6")
+            else "",
+            peer_public_key=validate.wireguard_key(
+                peer.get("public_key", ""), "peer public key"
+            ),
+            endpoint_host=validate.endpoint(
+                endpoint.get("host", ""), "endpoint host"
+            )
+            if endpoint.get("host")
+            else "",
+            endpoint_v4=validate.endpoint(
+                endpoint.get("v4", ""), "endpoint address"
+            )
+            if endpoint.get("v4")
+            else "",
+            ports=[validate.port(p, "endpoint port") for p in endpoint.get("ports") or [2408]],
+        )
+    except validate.InvalidValue as exc:
+        raise WarpError(
+            f"Cloudflare returned something unusable: {exc}. "
+            "Nothing has been written."
+        ) from exc
 
 
 def device_path(config_dir: Optional[Path] = None) -> Path:
@@ -247,8 +276,18 @@ def load(path: Optional[Path] = None) -> Optional[WarpDevice]:
 
     try:
         raw = json.loads(target.read_text())
-        return WarpDevice(**raw)
-    except (json.JSONDecodeError, TypeError) as exc:
+        if not isinstance(raw, dict):
+            raise TypeError(f"expected an object, got {type(raw).__name__}")
+        device = WarpDevice(**raw)
+        # The cache is on disk and could have been edited, so it gets the
+        # same checks the API response got.
+        validate.wireguard_key(device.private_key, "cached private key")
+        validate.wireguard_key(device.peer_public_key, "cached peer key")
+        validate.ip_interface(device.address_v4, "cached address")
+        if device.endpoint_host:
+            validate.endpoint(device.endpoint_host, "cached endpoint")
+        return device
+    except (json.JSONDecodeError, TypeError, validate.InvalidValue) as exc:
         raise WarpError(
             f"{target} is not a usable WARP device file ({exc}). "
             "Delete it and vpnctl will register a new one."

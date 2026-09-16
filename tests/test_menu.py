@@ -66,8 +66,27 @@ round-trip min/avg/max/stddev = 12.345/15.678/20.111/2.345 ms
 def test_rtt_and_loss_come_from_one_ping_run() -> None:
     # Both used to be read by separate functions that each ran their own ping,
     # which doubled the time a probe spent saying nothing.
-    assert _parse_rtts(PING_OUTPUT) == [12.345, 15.678]
+    #
+    # The sample is the mean, and only the mean. Taking min and avg and
+    # calling both "RTT samples" biased the median low, and pooling them
+    # across three targets turned the standard deviation into the spread
+    # between those targets rather than jitter.
+    assert _parse_rtts(PING_OUTPUT) == [15.678]
     assert _parse_loss(PING_OUTPUT) == 10.0
+
+
+def test_jitter_comes_from_pings_own_deviation() -> None:
+    from vpnctl.probe import _parse_summary
+
+    # min/avg/max/stddev: the mean and the deviation, nothing else.
+    assert _parse_summary(PING_OUTPUT) == (15.678, 2.345)
+
+
+def test_a_summary_without_a_deviation_is_handled() -> None:
+    from vpnctl.probe import _parse_summary
+
+    assert _parse_summary("rtt min/avg = 8.0/9.0 ms") == (9.0, None)
+    assert _parse_summary("no summary here") == (None, None)
 
 
 def test_loss_is_absent_rather_than_zero_when_ping_says_nothing() -> None:

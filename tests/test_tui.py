@@ -94,7 +94,7 @@ def test_a_missing_metric_is_a_dash():
 import pytest
 from rich.console import Console
 
-from vpnctl.tui import ProbeState, _build_layout, _metrics_strip, _regions
+from vpnctl.tui import ProbeState, _build_layout, _metrics_column
 
 
 def _state_with_history(samples: int = 60):
@@ -198,17 +198,32 @@ def test_the_split_tunnel_list_fits_its_budget():
     assert any("more" in line for line in lines)
 
 
-def test_metrics_go_on_two_lines_when_four_will_not_fit():
+def test_an_unprotected_machine_is_told_so_in_the_connection_pane():
     state = _state_with_history()
-    assert "\n" not in _metrics_strip(state, True, width=100).plain
-    assert "\n" in _metrics_strip(state, True, width=60).plain
+    pane = _metrics_column(state, None, [], width=48).plain
+    assert "no tunnel is up" in pane
+    assert "not protected" in pane
 
 
-def test_an_unprotected_machine_is_told_so_on_the_metrics_line():
+def test_the_connection_pane_shows_the_numbers_when_connected():
     state = _state_with_history()
-    assert "not protected" in _metrics_strip(state, False, width=100).plain
+    pane = _metrics_column(state, "warp-wireguard", [], width=48).plain
+    for label in ("rtt", "jitter", "loss", "download", "probes", "last probe"):
+        assert label in pane
 
 
-def test_regions_leaves_the_log_out_because_it_is_measured():
-    assert "log" not in _regions(30, 3, 2)
-    assert sum(_regions(30, 3, 2).values()) < 30
+@pytest.mark.parametrize(
+    "width,height",
+    [(20, 24), (40, 24), (60, 10), (80, 10), (60, 20), (72, 24), (80, 30), (200, 50)],
+)
+def test_the_footer_is_never_cropped_away(width, height):
+    """It is the only place ctrl-c is written down.
+
+    Only the log panel used to be height-aware, so the frame had a hard floor
+    of eighteen rows and anything shorter lost the footer off the bottom.
+    The narrow cases are separate: below about 54 columns the footer text
+    wraps to a four-row panel, and the layout assumed three.
+    """
+    lines = _render(width, height)
+    assert len(lines) <= height
+    assert any("ctrl-c" in line for line in lines)

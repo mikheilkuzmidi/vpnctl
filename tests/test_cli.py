@@ -7,6 +7,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
+from rich.text import Text
 
 from vpnctl.cli import main
 from vpnctl.providers.base import DoctorResult, ProbeResult, ProviderStatus
@@ -682,3 +683,49 @@ def test_connect_does_not_claim_to_disconnect_the_control_first(tmp_path, monkey
     assert result.exit_code == 0, result.output
     assert "Disconnecting direct" not in result.output
     direct.disconnect.assert_not_called()
+
+
+def test_an_ipv6_exclude_does_not_crash_the_leak_review():
+    """subnet_of raises TypeError across address families.
+
+    That is not the ValueError the loop catches, so every IPv6 entry used to
+    crash the review outright, and there were no IPv6 private ranges either,
+    so an ordinary IPv6 LAN exclude would have been called a public leak.
+    """
+    from vpnctl.split_tunnel import public_excludes
+
+    assert public_excludes(["fd00::/8"]) == []
+    assert public_excludes(["fe80::/10"]) == []
+    assert public_excludes(["::1/128"]) == []
+    assert public_excludes(["2001:db8::/32"]) == ["2001:db8::/32"]
+    assert public_excludes(["10.0.0.0/8", "fd00::/8", "2001:db8::/32"]) == [
+        "2001:db8::/32"
+    ]
+
+
+def test_container_output_is_not_parsed_as_markup():
+    """wg-quick prefixes every command it echoes with [#].
+
+    Printed through a markup f-string, rich ate those labels, and a stray
+    closing tag in remote text raised MarkupError in place of the error the
+    user was supposed to read.
+    """
+    from rich.console import Console
+
+    from vpnctl import render
+
+    console = Console(
+        width=80, record=True, force_terminal=False, theme=render.THEME
+    )
+    hostile = "[#] ip link add dev wgsmoke\n[/bad] not a tag"
+    # style= does not stop rich parsing a str: it applies the style
+    # underneath the markup it has already interpreted. Only a Text is
+    # literal, which is what the call sites pass.
+    console.print(Text(hostile), style="muted")
+    out = console.export_text()
+    assert "[#]" in out
+    assert "[/bad]" in out
+
+    with pytest.raises(Exception):
+        # And this is what those call sites used to do.
+        Console(width=80, force_terminal=False).print(f"[bad]{hostile}[/bad]")

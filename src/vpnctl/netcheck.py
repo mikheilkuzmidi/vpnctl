@@ -210,7 +210,12 @@ def _trace() -> tuple[Optional[dict[str, str]], str]:
     try:
         import httpx
 
-        with httpx.Client(timeout=_TIMEOUT, verify=False) as client:
+        # Verified. The egress address and the warp flag are reported to the
+        # user as facts about their network position, and with verification
+        # off any interceptor or captive portal could forge them. 1.1.1.1
+        # serves a certificate for its own address, so there was never a
+        # reason to skip the check: a TLS failure here is itself a finding.
+        with httpx.Client(timeout=_TIMEOUT) as client:
             body = client.get(f"https://{_TRACE_HOST}/cdn-cgi/trace").text
     except Exception as exc:  # httpx raises a family of these
         return None, f"{type(exc).__name__}"

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import stat
 import time
 from dataclasses import asdict, dataclass, field
@@ -29,6 +30,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
+
+from vpnctl import validate
 
 # Both are LEAP providers with the same API. The CA is fetched from the
 # provider rather than shipped, and pinned into the cached bundle.
@@ -123,26 +126,59 @@ class Bundle:
 
 
 def _parse_gateways(eip: dict[str, Any]) -> list[Gateway]:
+    """Turn the provider's gateway list into checked values.
+
+    Everything here is validated at the boundary, because the address ends up
+    in the `remote` line of an OpenVPN config that runs as root, and a value
+    carrying a newline would start a directive of its own. The allow-list
+    that screens the provider's options table never covered this line.
+
+    A gateway that does not validate is dropped rather than repaired. There
+    are twenty of them; losing one is better than trusting it.
+    """
     gateways: list[Gateway] = []
     for raw in eip.get("gateways", []):
+        if not isinstance(raw, dict):
+            continue
         pairs: list[tuple[str, int]] = []
-        for transport in raw.get("capabilities", {}).get("transport", []):
-            if transport.get("type") != "openvpn":
+        capabilities = raw.get("capabilities")
+        transports = (
+            capabilities.get("transport", []) if isinstance(capabilities, dict) else []
+        )
+        for transport in transports:
+            if not isinstance(transport, dict) or transport.get("type") != "openvpn":
                 continue
             for protocol in transport.get("protocols", []):
                 for port in transport.get("ports", []):
                     try:
-                        pairs.append((str(protocol), int(port)))
-                    except (TypeError, ValueError):
+                        pairs.append(
+                            (
+                                validate.one_of(
+                                    str(protocol), {"tcp", "udp"}, "protocol"
+                                ),
+                                validate.port(port, "gateway port"),
+                            )
+                        )
+                    except validate.InvalidValue:
                         continue
-        gateways.append(
-            Gateway(
-                host=str(raw.get("host", "")),
-                ip_address=str(raw.get("ip_address", "")),
-                location=str(raw.get("location", "")),
-                openvpn=pairs,
+
+        try:
+            gateways.append(
+                Gateway(
+                    host=validate.hostname(str(raw.get("host", "")), "gateway host"),
+                    ip_address=validate.ip_address(
+                        str(raw.get("ip_address", "")), "gateway address"
+                    ),
+                    # Only ever displayed, but a newline would break the
+                    # display and it costs nothing to check.
+                    location=validate._no_control_characters(
+                        str(raw.get("location", "")), "gateway location"
+                    ),
+                    openvpn=pairs,
+                )
             )
-        )
+        except validate.InvalidValue:
+            continue
     return gateways
 
 
@@ -186,16 +222,22 @@ def fetch(provider: str = "riseup") -> Bundle:
 
     # The API is served under the provider's own CA, so it is verified
     # against the certificate fetched above rather than the system store.
-    ca_file = Path(os.environ.get("TMPDIR", "/tmp")) / f"vpnctl-{provider}-ca.pem"
-    ca_file.write_text(ca_pem)
+    #
+    # Built in memory rather than written out. This used to go to a
+    # predictable path in the shared temp directory at 0644, which made the
+    # trust anchor for the very connection that fetches the gateway list and
+    # the client certificate writable by any local user.
+    context = ssl.create_default_context(cadata=ca_pem)
     try:
-        with httpx.Client(timeout=_TIMEOUT, verify=str(ca_file)) as client:
+        with httpx.Client(timeout=_TIMEOUT, verify=context) as client:
             eip = client.get(f"{api_uri}/{api_version}/config/eip-service.json").json()
             client_pem = client.post(f"{api_uri}/{api_version}/cert").text
     except httpx.HTTPError as exc:
         raise RiseupError(f"Could not fetch {provider}'s configuration: {exc}") from exc
-    finally:
-        ca_file.unlink(missing_ok=True)
+    except ssl.SSLError as exc:
+        raise RiseupError(
+            f"{provider}'s CA did not load: {exc}"
+        ) from exc
 
     if "BEGIN" not in client_pem:
         raise RiseupError(
@@ -251,6 +293,8 @@ def load(provider: str = "riseup", path: Optional[Path] = None) -> Optional[Bund
 
     try:
         raw = json.loads(target.read_text())
+        if not isinstance(raw, dict):
+            raise TypeError(f"expected an object, got {type(raw).__name__}")
         gateways = [
             Gateway(
                 host=g["host"],
@@ -268,7 +312,13 @@ def load(provider: str = "riseup", path: Optional[Path] = None) -> Optional[Bund
             openvpn_options=raw.get("openvpn_options", {}),
             fetched_at=float(raw.get("fetched_at", 0.0)),
         )
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+    except (
+        json.JSONDecodeError,
+        AttributeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as exc:
         raise RiseupError(
             f"{target} is not a usable bundle ({exc}). Delete it and vpnctl "
             "will fetch a new one."

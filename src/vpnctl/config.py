@@ -172,76 +172,134 @@ def _save_raw_config(raw: dict) -> None:
     _CONFIG_FILE.write_text(toml_dumps(raw))
 
 
-def load_config() -> Config:
-    """Load config from disk, creating defaults if absent."""
-    raw = _load_raw_config()
+class ConfigProblem(ValueError):
+    """The config file could not be read as written."""
 
-    policy_raw = raw.get("policy", {})
+
+def _coerce(raw: dict, key: str, kind, default):
+    """One field, with the default when it is missing or the wrong shape.
+
+    Every one of these used to be a bare int() or float() on whatever the
+    file said, and there was no handler anywhere above, so one stray
+    character in a hand-edited config produced a traceback from every
+    command, including `doctor`, whose whole job is to tell you the config is
+    wrong.
+    """
+    if not isinstance(raw, dict) or key not in raw:
+        return default
+    try:
+        return kind(raw[key])
+    except (TypeError, ValueError):
+        return default
+
+
+def _section(raw: dict, *path: str) -> dict:
+    """A nested table, or an empty one if it is missing or not a table."""
+    node = raw
+    for part in path:
+        if not isinstance(node, dict):
+            return {}
+        node = node.get(part, {})
+    return node if isinstance(node, dict) else {}
+
+
+def load_config() -> Config:
+    """Load config from disk, creating defaults if absent.
+
+    Never raises because of what the file contains. A field that cannot be
+    read falls back to its default, so a broken config degrades to a working
+    tool that can tell you about it rather than a traceback.
+    """
+    try:
+        raw = _load_raw_config()
+    except Exception:
+        # tomllib raises TOMLDecodeError, and a truncated or unreadable file
+        # raises OSError. Either way there is nothing to read.
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    policy_raw = _section(raw, "policy")
     policy = PolicyConfig(
-        probe_interval_minutes=int(
-            policy_raw.get("probe_interval_minutes", 10)
+        probe_interval_minutes=_coerce(policy_raw, "probe_interval_minutes", int, 10),
+        benchmark_interval_minutes=_coerce(
+            policy_raw, "benchmark_interval_minutes", int, 30
         ),
-        benchmark_interval_minutes=int(
-            policy_raw.get("benchmark_interval_minutes", 30)
+        consecutive_rounds_to_act=_coerce(
+            policy_raw, "consecutive_rounds_to_act", int, 2
         ),
-        consecutive_rounds_to_act=int(
-            policy_raw.get("consecutive_rounds_to_act", 2)
+        min_rtt_improvement_ms=_coerce(
+            policy_raw, "min_rtt_improvement_ms", float, 15.0
         ),
-        min_rtt_improvement_ms=float(
-            policy_raw.get("min_rtt_improvement_ms", 15.0)
-        ),
-        min_score_improvement_pct=float(
-            policy_raw.get("min_score_improvement_pct", 20.0)
+        min_score_improvement_pct=_coerce(
+            policy_raw, "min_score_improvement_pct", float, 20.0
         ),
     )
 
-    providers_raw = raw.get("providers", {})
+    providers_raw = _section(raw, "providers")
 
-    masque_raw = providers_raw.get("warp-masque", {})
-    warp_masque = WarpProviderConfig(enabled=bool(masque_raw.get("enabled", True)))
-
-    wg_raw = providers_raw.get("warp-wireguard", {})
-    warp_wireguard = WarpProviderConfig(enabled=bool(wg_raw.get("enabled", True)))
-
-    custom_raw = providers_raw.get("wireguard-custom", {})
-    direct_raw = raw.get("providers", {}).get("direct", {})
-    direct = WarpProviderConfig(enabled=bool(direct_raw.get("enabled", True)))
+    warp_masque = WarpProviderConfig(
+        enabled=_coerce(_section(providers_raw, "warp-masque"), "enabled", bool, True)
+    )
+    warp_wireguard = WarpProviderConfig(
+        enabled=_coerce(
+            _section(providers_raw, "warp-wireguard"), "enabled", bool, True
+        )
+    )
+    custom_raw = _section(providers_raw, "wireguard-custom")
+    direct = WarpProviderConfig(
+        enabled=_coerce(_section(providers_raw, "direct"), "enabled", bool, True)
+    )
 
     wg_custom = WgCustomConfig(
-        enabled=bool(custom_raw.get("enabled", False)),
-        endpoint=str(custom_raw.get("endpoint", "")),
-        public_key=str(custom_raw.get("public_key", "")),
-        interface=str(custom_raw.get("interface", "wgcustom")),
+        enabled=_coerce(custom_raw, "enabled", bool, False),
+        endpoint=_coerce(custom_raw, "endpoint", str, ""),
+        public_key=_coerce(custom_raw, "public_key", str, ""),
+        interface=_coerce(custom_raw, "interface", str, "wgcustom"),
         key_file=custom_raw.get("key_file"),
-        address=str(custom_raw.get("address", "10.8.0.2/32")),
-        dns=str(custom_raw.get("dns", "1.1.1.1")),
-        allowed_ips=str(custom_raw.get("allowed_ips", "0.0.0.0/0")),
+        address=_coerce(custom_raw, "address", str, "10.8.0.2/32"),
+        dns=_coerce(custom_raw, "dns", str, "1.1.1.1"),
+        allowed_ips=_coerce(custom_raw, "allowed_ips", str, "0.0.0.0/0"),
     )
 
-    riseup_raw = providers_raw.get("riseup", {})
+    riseup_raw = _section(providers_raw, "riseup")
+    provider_name = _coerce(riseup_raw, "provider", str, "riseup")
+    if provider_name not in ("riseup", "calyx"):
+        # It is a path component and a pkill pattern, so an arbitrary string
+        # is not something to pass along.
+        provider_name = "riseup"
     riseup_cfg = RiseupConfig(
-        enabled=bool(riseup_raw.get("enabled", False)),
-        provider=str(riseup_raw.get("provider", "riseup")),
-        location=str(riseup_raw.get("location", "")),
-        protocol=str(riseup_raw.get("protocol", "tcp")),
-        port=int(riseup_raw.get("port", 1194)),
+        enabled=_coerce(riseup_raw, "enabled", bool, False),
+        provider=provider_name,
+        location=_coerce(riseup_raw, "location", str, ""),
+        protocol=_coerce(riseup_raw, "protocol", str, "tcp")
+        if _coerce(riseup_raw, "protocol", str, "tcp") in ("tcp", "udp")
+        else "tcp",
+        port=_coerce(riseup_raw, "port", int, 1194),
     )
 
-    tr_raw = raw.get("transport", {})
+    tr_raw = _section(raw, "transport")
     transport = TransportConfig(
-        kind=str(tr_raw.get("kind", "direct")),
-        server=str(tr_raw.get("server", "")),
-        local_port=int(tr_raw.get("local_port", 51820)),
-        sni=str(tr_raw.get("sni", "")),
-        path_prefix=str(tr_raw.get("path_prefix", "")),
-        credentials=str(tr_raw.get("credentials", "")),
-        verify_certificate=bool(tr_raw.get("verify_certificate", False)),
+        kind=_coerce(tr_raw, "kind", str, "direct"),
+        server=_coerce(tr_raw, "server", str, ""),
+        local_port=_coerce(tr_raw, "local_port", int, 51820),
+        sni=_coerce(tr_raw, "sni", str, ""),
+        path_prefix=_coerce(tr_raw, "path_prefix", str, ""),
+        credentials=_coerce(tr_raw, "credentials", str, ""),
+        verify_certificate=_coerce(tr_raw, "verify_certificate", bool, True),
     )
 
-    st_raw = raw.get("split_tunnel", {})
+    st_raw = _section(raw, "split_tunnel")
+    raw_excludes = st_raw.get("excludes", [])
+    if isinstance(raw_excludes, str):
+        # A bare string used to be iterated into single characters, so ten
+        # one-character "CIDRs" were handed to `route add` one at a time.
+        raw_excludes = [raw_excludes]
+    elif not isinstance(raw_excludes, list):
+        raw_excludes = []
     split_tunnel = SplitTunnelConfig(
-        enabled=bool(st_raw.get("enabled", False)),
-        excludes=list(st_raw.get("excludes", [])),
+        enabled=_coerce(st_raw, "enabled", bool, False),
+        excludes=[str(item) for item in raw_excludes],
     )
 
     return Config(

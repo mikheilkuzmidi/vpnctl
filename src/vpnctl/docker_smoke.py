@@ -69,14 +69,27 @@ class NotConfigured(RuntimeError):
     """There is no self-hosted tunnel described in the config to test."""
 
 
-def _run(args: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        args,
-        cwd=str(cwd) if cwd else None,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+def _run(
+    args: list[str], *, cwd: Path | None = None, timeout: float = 600.0
+) -> subprocess.CompletedProcess:
+    """Run a docker command. Always with a timeout.
+
+    Without one a wedged `docker build` or `docker run` hung forever behind
+    a spinner, indistinguishable from a slow first build.
+    """
+    try:
+        return subprocess.run(
+            args,
+            cwd=str(cwd) if cwd else None,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            args, 124, "", f"timed out after {timeout:.0f}s: {' '.join(args[:3])}"
+        )
 
 
 def _require_docker() -> None:

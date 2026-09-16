@@ -25,6 +25,7 @@ before handing over the default route.
 from __future__ import annotations
 
 import abc
+import errno
 import shutil
 import socket
 import subprocess
@@ -99,7 +100,11 @@ class WstunnelSettings:
     sni: str = ""
     path_prefix: str = ""
     credentials: str = ""
-    verify_certificate: bool = False
+    # On by default. wstunnel treats certificate validation as opt-in, so
+    # with this False the shipped end to end default was TLS with no server
+    # authentication at all, which also hands the relay credential to
+    # whoever is on the path.
+    verify_certificate: bool = True
 
 
 class WstunnelTransport(Transport):
@@ -178,6 +183,10 @@ class WstunnelTransport(Transport):
             args += ["--tls-verify-certificate"]
         args.append(self._settings.server)
 
+        # stderr is captured only while waiting for the listener, then
+        # discarded. A long lived relay left with an undrained pipe blocks
+        # forever once the buffer fills, which stops it relaying while the
+        # tunnel still looks up.
         self._process = subprocess.Popen(
             args,
             stdout=subprocess.DEVNULL,
@@ -210,9 +219,18 @@ class WstunnelTransport(Transport):
             probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
                 probe.bind(("127.0.0.1", port))
-            except OSError:
-                # Something holds the port, which is wstunnel having started.
-                return
+            except OSError as exc:
+                # Only "someone already has this port" means started. Any
+                # other error was being read as success, so a privileged
+                # local_port or an exhausted fd table looked like a running
+                # relay. Binding the port we are waiting for is also a race
+                # with wstunnel's own bind, so release it immediately.
+                if exc.errno in (errno.EADDRINUSE, errno.EACCES):
+                    if exc.errno == errno.EADDRINUSE:
+                        return
+                    raise TransportError(
+                        f"cannot use local port {port}: {exc.strerror}"
+                    ) from exc
             finally:
                 probe.close()
             time.sleep(_POLL)
@@ -226,6 +244,13 @@ class WstunnelTransport(Transport):
     def stop(self) -> None:
         if self._process is None:
             return
+        # Close the captured pipe, or its descriptor leaks on every
+        # start/stop cycle.
+        if self._process.stderr is not None:
+            try:
+                self._process.stderr.close()
+            except OSError:
+                pass
         if self._process.poll() is None:
             self._process.terminate()
             try:
@@ -249,11 +274,33 @@ class WstunnelTransport(Transport):
 
 
 def build_transport(kind: str, settings: WstunnelSettings) -> Transport:
-    """The transport named in the config."""
+    """The transport named in the config.
+
+    An unrecognised name falls back to direct rather than raising. This is
+    called from build_providers, which every command uses, so a typo in the
+    config file used to make the whole tool unusable, including `doctor`,
+    whose job is to tell you your config is wrong. The mistake is reported
+    by doctor instead.
+    """
     if kind in ("", "direct", "none"):
         return DirectTransport()
     if kind == "wstunnel":
         return WstunnelTransport(settings)
-    raise TransportError(
-        f"Unknown transport {kind!r}. Available: direct, wstunnel"
-    )
+    return UnknownTransport(kind)
+
+
+class UnknownTransport(DirectTransport):
+    """A misconfigured transport: behaves as direct, and says so in doctor."""
+
+    def __init__(self, kind: str) -> None:
+        self._kind = kind
+
+    @property
+    def kind(self) -> str:
+        return self._kind
+
+    def doctor(self) -> list[str]:
+        return [
+            f"unknown transport {self._kind!r} in the config; "
+            "using direct. Available: direct, wstunnel"
+        ]

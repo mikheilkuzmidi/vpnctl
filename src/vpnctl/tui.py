@@ -22,9 +22,7 @@ from datetime import datetime
 from typing import Optional
 
 from rich import box
-from rich.align import Align
 from rich.console import Console, Group
-from rich.layout import Layout
 from rich.live import Live
 from rich.rule import Rule
 from rich.panel import Panel
@@ -111,7 +109,6 @@ class ProbeState:
     jitter_ms: Optional[float] = None
     loss_pct: Optional[float] = None
     dl_mbps: Optional[float] = None
-    score: Optional[float] = None
     error: Optional[str] = None
     last_updated: Optional[float] = None
     probe_count: int = 0
@@ -277,162 +274,9 @@ def _status_badge(s: ProviderStatus) -> Text:
     return Text("? UNKNOWN", style="dim")
 
 
-def _regions(height: int, providers: int, excludes: int) -> dict[str, int]:
-    """How many rows each part of the screen gets, computed not clipped.
-
-    The old layout split the terminal into a fixed header, a fixed footer and
-    a body divided in half, then put two panels in it. At 80x30 that left ten
-    consecutive rows where both panels were entirely blank, and the waste grew
-    with the terminal because nothing was height-capped: twenty blank rows at
-    120x40.
-
-    The content is about fourteen lines, so filling thirty rows means either
-    padding or something worth showing. The probe log is the latter: the
-    samples were already being measured and thrown away, and a latency spike
-    is visible as it happens. It absorbs whatever is left, so nothing pads at
-    any size, and it is the first thing to shrink when there is not enough.
-    """
-    fixed = {
-        "header": 1,
-        "metrics": 3,
-        "history": 3,
-        "providers": 2 if providers else 0,
-        "split": 1 + min(excludes, 4) if excludes else 1,
-        "footer": 2,
-    }
-    if height - sum(fixed.values()) < 3:
-        # Not enough room for a log worth reading, so give the space back to
-        # the split-tunnel list instead of showing two lines of history.
-        fixed["split"] = 1
-    # The log deliberately has no entry here: its height is measured from
-    # what the rest actually took, because predicting it is what made the
-    # screen run over the terminal in the first place.
-    return fixed
 
 
-def _metrics_strip(state: ProbeState, connected: bool, width: int = 80) -> Text:
-    """The four numbers, side by side.
 
-    Horizontal rather than a vertical key/value table. Spending width, which
-    was 45 to 68 percent idle, instead of height is what actually removes the
-    blank rows.
-    """
-    with state.lock:
-        rtt, jit, loss, dl = (
-            state.rtt_ms,
-            state.jitter_ms,
-            state.loss_pct,
-            state.dl_mbps,
-        )
-
-    if not connected:
-        line = Text("  ")
-        line.append("no tunnel is up", style="yellow")
-        line.append("   this machine's traffic is not protected", style="dim")
-        return line
-
-    metrics = [
-        ("rtt", _fmt(rtt, "ms", warn=200)),
-        ("jitter", _fmt(jit, "ms", warn=50)),
-        ("loss", _fmt(loss, "%", warn=5)),
-        ("down", _fmt_throughput(dl, floor=1.0)),
-    ]
-    # Four on one line needs about 66 columns. Below that they wrap, and a
-    # wrapped metric strip is worse than two deliberate lines of two.
-    per_line = 4 if width >= 72 else 2
-    lines: list[Text] = []
-    for start in range(0, len(metrics), per_line):
-        line = Text("  ")
-        for label, value in metrics[start : start + per_line]:
-            line.append(f"{label} ", style="dim")
-            line.append_text(value)
-            line.append("    ")
-        lines.append(line)
-    return Text("\n").join(lines)
-
-
-def _history_block(state: ProbeState, width: int) -> Text:
-    """Both sparklines, sized to the terminal.
-
-    The width used to be the same constant as the deque's maxlen, so anything
-    narrower than 88 columns quietly dropped the oldest readings.
-    """
-    with state.lock:
-        rtt_hist = list(state.rtt_history)
-        dl_hist = list(state.dl_history)
-
-    # 9 for the label, 18 for the range, plus padding.
-    spark = max(12, width - 30)
-    lines: list[Text] = []
-    for label, values, unit, style in (
-        ("rtt ms", rtt_hist, "ms", "green"),
-        ("down", dl_hist, "Mbps", "blue"),
-    ):
-        line = Text(f"  {label:<8}", style="dim")
-        line.append(_sparkline(values, spark), style=style)
-        if values:
-            window = values[-spark:]
-            line.append(f"  {min(window):.0f}-{max(window):.0f} {unit}", style="dim")
-        else:
-            line.append("  collecting", style="dim")
-        lines.append(line)
-    return Text("\n").join(lines)
-
-
-def _providers_line(state: ProbeState, providers) -> Text:
-    """Every provider on one line while they fit."""
-    with state.lock:
-        statuses = dict(state.provider_status)
-
-    line = Text("  ")
-    for provider in providers:
-        status = statuses.get(provider.provider_id)
-        if status == ProviderStatus.CONNECTED:
-            dot, style = "\u25cf", "green"
-        elif status == ProviderStatus.CONNECTING:
-            dot, style = "\u25cc", "yellow"
-        elif status is None:
-            dot, style = "\u00b7", "dim"
-        else:
-            dot, style = "\u25cb", "dim"
-        line.append(dot + " ", style=style)
-        line.append(provider.provider_id, style="dim")
-        if provider.is_control:
-            line.append(" control", style="dim")
-        line.append("   ")
-    return line
-
-
-def _log_block(state: ProbeState, rows: int, width: int = 80) -> Text:
-    """The last few probes, newest last.
-
-    Every line has to fit on one row. A wrapped entry makes the block taller
-    than it was allocated, which pushed the footer off the bottom at 60
-    columns: the throughput reading is the first thing to go, since it only
-    appears on one line in six anyway.
-    """
-    with state.lock:
-        events = list(state.events)[-rows:]
-
-    lines: list[Text] = []
-    for when, rtt, jit, loss, dl in events:
-        stamp = datetime.fromtimestamp(when).strftime("%H:%M:%S")
-        line = Text(f"  {stamp}  ", style="dim")
-        line.append("rtt ", style="dim")
-        line.append(f"{rtt:.1f}" if rtt is not None else "-", style="none")
-        line.append("   jitter ", style="dim")
-        line.append(f"{jit:.1f}" if jit is not None else "-", style="none")
-        line.append("   loss ", style="dim")
-        line.append(f"{loss:.1f}%" if loss is not None else "-", style="none")
-        suffix = f"   down {dl:.2f} Mbps" if dl is not None else ""
-        if suffix and len(line.plain) + len(suffix) <= width:
-            line.append("   down ", style="dim")
-            line.append(f"{dl:.2f} Mbps", style="none")
-        # Anything still over is truncated rather than wrapped.
-        if len(line.plain) > width:
-            line = Text(line.plain[:width])
-        lines.append(line)
-    return Text("\n").join(lines)
 
 
 def _metrics_column(state: ProbeState, connected, providers, width: int = 48) -> Text:
@@ -586,6 +430,10 @@ def _build_layout(state: ProbeState, providers, cfg, console: Console) -> Group:
     """
     width, height = console.width, console.height
 
+    # Taken once. The probe thread commits every field in one block, but the
+    # renderer used to take the lock four separate times, so a frame could
+    # straddle two generations and show "not connected" in the header above a
+    # provider row saying connected.
     with state.lock:
         statuses = dict(state.provider_status)
 
@@ -614,12 +462,24 @@ def _build_layout(state: ProbeState, providers, cfg, console: Console) -> Group:
     # One column when there is no room for two.
     single = width < 2 * _PANE_MIN
 
+    def pane_rows(text: Text, pane_width: int) -> int:
+        """How many screen rows a pane's content really takes.
+
+        Panel(height=N) crops, and a provider row is 31 columns, so at a
+        narrow width each logical line took two rows while the height still
+        counted one: the connection pane quietly cut itself off mid-list and
+        the download reading, the probe count and the age all vanished.
+        """
+        return len(
+            console.render_lines(text, console.options.update(width=pane_width))
+        )
+
     pane_width = width - 4 if single else (width // 2) - 4
     left = _metrics_column(state, connected, providers, pane_width)
-    right_rows = len(left.plain.split("\n"))
+    right_rows = pane_rows(left, pane_width)
     right = _history_column(state, cfg, pane_width, right_rows)
 
-    body_rows = max(len(left.plain.split("\n")), len(right.plain.split("\n")))
+    body_rows = max(pane_rows(left, pane_width), pane_rows(right, pane_width))
 
     pieces: list = [Panel(header, box=box.ROUNDED, style="rule", padding=(0, 0))]
     if single:
@@ -631,14 +491,16 @@ def _build_layout(state: ProbeState, providers, cfg, console: Console) -> Group:
                 left,
                 title="connection",
                 box=box.ROUNDED,
-                height=len(left.plain.split("\n")) + 2,
+                height=pane_rows(left, width - 4) + 2,
             )
         )
         # Whatever is left after the header, the connection pane and the
         # footer. Stacking two full-height panes does not fit a short
         # terminal, so this one is trimmed rather than allowed to push the
-        # footer off the bottom.
-        spare_rows = height - 3 - (len(left.plain.split("\n")) + 2) - 3
+        # footer off the bottom. The trailing 4 is a deliberate
+        # over-estimate of the footer panel, which wraps to four rows at
+        # these widths; the loop below corrects any remainder.
+        spare_rows = height - 3 - (len(left.plain.split("\n")) + 2) - 4
         if spare_rows >= 5:
             shown = right.plain.split("\n")[: spare_rows - 2]
             pieces.append(
@@ -665,9 +527,29 @@ def _build_layout(state: ProbeState, providers, cfg, console: Console) -> Group:
     footer.append(f"    probing every {_FAST_INTERVAL}s", style="muted")
     footer.append(f", speed every {_SLOW_INTERVAL}s", style="muted")
 
-    # Measure what is fixed, and give the rest to the log.
-    used = len(console.render_lines(Group(*pieces), console.options.update(width=width)))
-    spare = height - used - 3  # the footer panel
+    def rows_of(renderable) -> int:
+        return len(
+            console.render_lines(renderable, console.options.update(width=width))
+        )
+
+    # The footer is measured, not assumed to be three rows. Below about 54
+    # columns its text wraps and the panel is four, and the unaccounted row
+    # pushed the whole frame past the bottom of the screen: the one place
+    # `ctrl-c quit` is written down was the first thing cropped.
+    footer_panel = Panel(footer, box=box.ROUNDED, style="rule", padding=(0, 0))
+    footer_rows = rows_of(footer_panel)
+
+    used = rows_of(Group(*pieces))
+    spare = height - used - footer_rows
+
+    # If the fixed part alone does not fit, drop panes from the bottom up
+    # until it does. Only the log used to be height-aware, so the frame had
+    # a hard floor of eighteen rows however small the terminal was.
+    while spare < 0 and len(pieces) > 1:
+        pieces.pop()
+        used = rows_of(Group(*pieces))
+        spare = height - used - footer_rows
+
     if spare >= 4:
         pieces.append(
             Panel(
@@ -677,7 +559,7 @@ def _build_layout(state: ProbeState, providers, cfg, console: Console) -> Group:
                 height=spare,
             )
         )
-    pieces.append(Panel(footer, box=box.ROUNDED, style="rule", padding=(0, 0)))
+    pieces.append(footer_panel)
 
     return Group(*pieces)
 

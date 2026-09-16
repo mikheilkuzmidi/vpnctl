@@ -59,8 +59,10 @@ BACK = "back"
 _TWO_PANE_MIN = 72
 
 # How wide the list column is allowed to get before the detail pane starts
-# losing more than it gains.
-_LIST_WIDTH = 26
+# losing more than it gains. The longest shipped label is 26 characters and a
+# row costs 4 for the cursor plus 3 for a submenu marker, so anything under
+# 33 truncated a real entry at every terminal size.
+_LIST_WIDTH = 33
 
 
 class NotATerminal(RuntimeError):
@@ -218,18 +220,30 @@ def _detail_column(entry: MenuEntry) -> Group:
 
 
 def _wrap(console: Console, renderable, width: int) -> list[Text]:
-    """Render something to a fixed width and return its lines.
+    """Render something to a fixed width and return its styled lines.
 
     Wrapping happens here, once, at the width the cell will actually be. The
     old code wrapped by hand at a fixed 72 and then let rich re-wrap the
     result when the panel was clamped, which is how the hanging indent
     collapsed at exactly 80 columns. Pre-wrapped lines in a fixed-width
     no-wrap cell cannot be re-flowed, so that cannot happen again.
+
+    The styles have to be carried across by hand. render_lines puts them on
+    Segment.style, not as escapes inside Segment.text, so joining the text
+    and nothing else silently dropped every one: the cursor lost its colour
+    and the selected label its weight, in the two-pane branch only, which is
+    the one a normal terminal uses. The highlight was two characters of "> "
+    and nothing more.
     """
-    segments = console.render_lines(
+    lines: list[Text] = []
+    for segments in console.render_lines(
         renderable, console.options.update(width=width), pad=False
-    )
-    return [Text.from_ansi("".join(seg.text for seg in line)) for line in segments]
+    ):
+        line = Text()
+        for segment in segments:
+            line.append(segment.text, style=segment.style)
+        lines.append(line)
+    return lines
 
 
 def render(
@@ -239,6 +253,7 @@ def render(
     index: int,
     *,
     status: str = "",
+    allow_back: bool = False,
     footer: Optional[list[tuple[str, str]]] = None,
 ) -> None:
     """Draw one frame of the menu. Separated out so tests can call it."""
@@ -252,14 +267,21 @@ def render(
         # No room for two columns. The list alone still works, with only the
         # highlighted entry explained underneath: printing every entry's hint
         # is what made the old screen mostly hints.
-        console.print(_list_column(entries, index))
+        console.print(_list_column(entries, index, console.width - 2))
         console.print()
         for line in _wrap(console, _detail_column(entry), console.width - 4):
             console.print(Text("  ") + line, style="dim")
     else:
+        # A row is 4 for the indent and cursor, the label, and 3 more when
+        # the entry opens a submenu. Budgeting label + 6 was one short of
+        # that, so the longest label in any level containing a submenu was
+        # always truncated.
+        widest = max(
+            len(e.label) + (3 if e.is_submenu else 0) for e in entries
+        )
         list_width = min(
-            max(len(e.label) for e in entries) + 6,
-            max(18, console.width // 3),
+            widest + 4 + GUTTER,
+            max(18, console.width // 2),
             _LIST_WIDTH + GUTTER,
         )
         detail_width = console.width - list_width - 3
@@ -283,13 +305,24 @@ def render(
             )
         console.print(body)
 
-    layout.keys(console, footer or _default_footer(entries))
+    layout.keys(console, footer or _default_footer(entries, allow_back))
 
 
-def _default_footer(entries: list[MenuEntry]) -> list[tuple[str, str]]:
-    bindings = [("up down", "move"), ("enter", "run")]
+def _default_footer(
+    entries: list[MenuEntry], allow_back: bool = False
+) -> list[tuple[str, str]]:
+    """The keys this level actually responds to.
+
+    It used to advertise "right open" whenever any entry was a submenu, so
+    right-arrow on Connect looked like navigation and instead ran a command
+    that moves the default route. And it never named the back key even when
+    there was one to name.
+    """
+    bindings = [("up down", "move"), ("enter", "choose")]
     if any(entry.is_submenu for entry in entries):
-        bindings.insert(1, ("right", "open"))
+        bindings.append(("right", "open"))
+    if allow_back:
+        bindings.append(("left", "back"))
     bindings.append(("q", "quit"))
     return bindings
 
@@ -322,6 +355,7 @@ def select(
             entries,
             index,
             status=status or subtitle,
+            allow_back=allow_back,
         )
 
         key = read_key()
@@ -329,10 +363,19 @@ def select(
             index = (index - 1) % len(entries)
         elif key == DOWN:
             index = (index + 1) % len(entries)
-        elif key in (ENTER, RIGHT):
+        elif key == ENTER:
             return index
+        elif key == RIGHT:
+            # Only opens. Enter stays the one key that runs anything, since
+            # connect, disconnect and benchmark all change network state and
+            # a stray arrow while browsing should not trigger one.
+            if entries[index].is_submenu:
+                return index
         elif key == LEFT:
             if allow_back:
                 return BACK
         elif key == QUIT:
-            return BACK if allow_back else None
+            # q quits, from any depth. Returning BACK here meant three
+            # levels down needed three presses, while the footer promised
+            # quit the whole time.
+            return None

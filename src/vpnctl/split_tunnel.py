@@ -146,6 +146,12 @@ _PRIVATE_RANGES = (
     ipaddress.ip_network("169.254.0.0/16"),
     ipaddress.ip_network("127.0.0.0/8"),
     ipaddress.ip_network("100.64.0.0/10"),  # CGNAT, which Tailscale uses
+    # IPv6, which was missing entirely: an ordinary IPv6 LAN exclude was
+    # reported as a public leak, and comparing it against the IPv4 ranges
+    # above raised TypeError rather than returning an answer.
+    ipaddress.ip_network("fc00::/7"),       # unique local
+    ipaddress.ip_network("fe80::/10"),      # link local
+    ipaddress.ip_network("::1/128"),        # loopback
 )
 
 
@@ -163,6 +169,14 @@ def public_excludes(excludes: list[str]) -> list[str]:
         except ValueError:
             leaking.append(entry)
             continue
-        if not any(network.subnet_of(private) for private in _PRIVATE_RANGES):
+        # subnet_of raises TypeError across address families, which is not
+        # what the except below catches, so every IPv6 entry used to crash
+        # the leak review.
+        same_family = [
+            private
+            for private in _PRIVATE_RANGES
+            if private.version == network.version
+        ]
+        if not any(network.subnet_of(private) for private in same_family):
             leaking.append(entry)
     return leaking

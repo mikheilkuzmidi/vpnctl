@@ -46,18 +46,46 @@ W_TPUT = 0.10
 LOSS_PENALTY = 5.0
 
 
-def _parse_rtts(stdout: str) -> list[float]:
-    """Pull RTT samples in ms out of ping's output."""
-    rtts: list[float] = []
+def _parse_summary(stdout: str) -> tuple[Optional[float], Optional[float]]:
+    """The mean RTT and the deviation, from ping's own summary line.
+
+    macOS prints `round-trip min/avg/max/stddev = 8.1/9.0/10.2/0.7 ms` and
+    Linux prints `rtt min/avg/max/mdev = ...`. Four numbers, and the last one
+    is the jitter ping already measured across the whole run.
+
+    This used to take the first two fields and append both to a list of "RTT
+    samples", which meant two things were wrong at once. The minimum was
+    mixed in with the mean, biasing the median low. And because the samples
+    from all three targets were pooled, the standard deviation of that pool
+    was really the spread between the three hosts, so a provider whose exit
+    happened to be far from one of them was charged for jitter it did not
+    have. The deviation ping reports was discarded.
+    """
     for line in stdout.splitlines():
         if "round-trip" in line or "rtt" in line:
             parts = line.split("=")[-1].strip().split("/")
             if len(parts) >= 2:
                 try:
-                    rtts.append(float(parts[0].strip()))
-                    rtts.append(float(parts[1].strip()))
-                except ValueError:
-                    pass
+                    # "9.0 ms" when the summary has only two fields.
+                    avg = float(parts[1].split()[0].strip())
+                except (ValueError, IndexError):
+                    continue
+                deviation = None
+                if len(parts) >= 4:
+                    try:
+                        deviation = float(parts[3].split()[0].strip())
+                    except (ValueError, IndexError):
+                        deviation = None
+                return avg, deviation
+    return None, None
+
+
+def _parse_rtts(stdout: str) -> list[float]:
+    """Pull RTT samples in ms out of ping's output."""
+    rtts: list[float] = []
+    avg, _ = _parse_summary(stdout)
+    if avg is not None:
+        rtts.append(avg)
     if rtts:
         return rtts
     # No summary line: fall back to the per-reply times.
@@ -84,8 +112,10 @@ def _parse_loss(stdout: str) -> Optional[float]:
     return None
 
 
-def _ping_host(host: str, count: int = _PING_COUNT) -> tuple[list[float], float]:
-    """Ping a host once and return (rtt samples, loss percent).
+def _ping_host(
+    host: str, count: int = _PING_COUNT
+) -> tuple[list[float], float, Optional[float]]:
+    """Ping a host once and return (rtt samples, loss percent, deviation).
 
     Both numbers come from the same run. They used to be gathered by two
     functions that each shelled out their own `ping -c 10`, so three targets
@@ -101,13 +131,14 @@ def _ping_host(host: str, count: int = _PING_COUNT) -> tuple[list[float], float]
             check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
-        return [], 100.0
+        return [], 100.0, None
 
     rtts = _parse_rtts(result.stdout)
+    _, deviation = _parse_summary(result.stdout)
     loss = _parse_loss(result.stdout)
     if loss is None:
         loss = 100.0 if not rtts else 0.0
-    return rtts, loss
+    return rtts, loss, deviation
 
 
 def _measure_download() -> float:
@@ -159,14 +190,17 @@ def run_probe(provider_id: str, on_progress: Optional[ProgressFn] = None) -> Pro
             on_progress(msg)
 
     all_rtts: list[float] = []
+    all_jitters: list[float] = []
     loss_samples: list[float] = []
 
     total = len(_PING_TARGETS)
     for index, host in enumerate(_PING_TARGETS, start=1):
         _say(f"pinging {host} ({index}/{total})")
-        samples, loss = _ping_host(host)
+        samples, loss, deviation = _ping_host(host)
         if samples:
             all_rtts.extend(samples)
+        if deviation is not None:
+            all_jitters.append(deviation)
         loss_samples.append(loss)
 
     if not all_rtts:
@@ -181,7 +215,13 @@ def run_probe(provider_id: str, on_progress: Optional[ProgressFn] = None) -> Pro
         )
 
     median_rtt = statistics.median(all_rtts)
-    jitter = statistics.stdev(all_rtts) if len(all_rtts) > 1 else 0.0
+    # ping's own deviation, averaged across the targets, rather than the
+    # spread between the targets themselves.
+    jitter = (
+        statistics.mean(all_jitters)
+        if all_jitters
+        else (statistics.stdev(all_rtts) if len(all_rtts) > 1 else 0.0)
+    )
     loss_pct = statistics.mean(loss_samples)
     _say("measuring download throughput")
     tput = _measure_download()
