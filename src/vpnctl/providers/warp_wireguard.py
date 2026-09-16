@@ -24,6 +24,7 @@ from typing import Optional
 from vpnctl import warp
 from vpnctl.providers.base import DoctorResult
 from vpnctl.providers.wg_custom import WgCustomAdapter
+from vpnctl.transports import Transport
 
 _PROVIDER_ID = "warp-wireguard"
 
@@ -43,6 +44,7 @@ class WarpWireguardAdapter(WgCustomAdapter):
         self,
         excludes: list[str] | None = None,
         device_path: Optional[Path] = None,
+        transport: Optional[Transport] = None,
     ) -> None:
         super().__init__(
             endpoint="",
@@ -55,6 +57,7 @@ class WarpWireguardAdapter(WgCustomAdapter):
             excludes=excludes,
             provider_id=_PROVIDER_ID,
             mtu=warp.WARP_MTU,
+            transport=transport,
         )
         # The parameters arrive from Cloudflare, not from the config file, so
         # the inherited config-file checks do not apply.

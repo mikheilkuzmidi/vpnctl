@@ -19,7 +19,8 @@ env/
 vps.pem
 *.pem
 *.key
-setup_server.sh
+# setup_server.sh is part of the product, not a local artefact: without it
+# `vpnctl bootstrap-wireguard-vps` cannot work from a fresh clone.
 
 # macOS
 .DS_Store

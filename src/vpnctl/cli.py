@@ -24,7 +24,7 @@ from rich.table import Table
 from vpnctl.bootstrap import bootstrap_wireguard_vps
 from vpnctl.tailscale_bootstrap import bootstrap_tailscale_exit_node
 from vpnctl import menu
-from vpnctl.config import config_path, load_config
+from vpnctl.config import config_path, configure_transport, load_config
 from vpnctl.docker_smoke import (
     SANDBOXABLE,
     NoHandshake,
@@ -39,6 +39,8 @@ from vpnctl.selector import (
     run_benchmark,
     save_results,
 )
+from vpnctl.bypass import BypassError, run_bypass_test
+from vpnctl.netcheck import run_checks
 from vpnctl.setup_wizard import needs_setup, run_setup
 from vpnctl.split_tunnel import list_warp_excludes
 from vpnctl.toml_utils import dumps as toml_dumps
@@ -304,6 +306,129 @@ def disconnect() -> None:
         console.print("[dim]No active tunnels.[/dim]")
 
 
+@main.command("diagnose")
+def diagnose() -> None:
+    """Work out what this network will carry, without changing any routing."""
+    console.print(
+        "[bold]Measuring what this network allows…[/bold] "
+        "[dim](nothing is connected or rerouted)[/dim]\n"
+    )
+    with console.status("[dim]probing…[/dim]", spinner="dots"):
+        report = run_checks()
+
+    table = Table(box=box.SIMPLE_HEAD)
+    table.add_column("Check", style="bold")
+    table.add_column("Result", width=6)
+    table.add_column("Detail", style="dim")
+    for check in report.checks:
+        table.add_row(
+            check.name,
+            "[green]ok[/green]" if check.ok else "[red]no[/red]",
+            check.detail,
+        )
+    console.print(table)
+
+    console.print(f"\n[bold]{report.verdict()}[/bold]\n")
+    console.print(report.recommendation())
+
+
+@main.group(name="transport")
+def transport_group() -> None:
+    """Carry the tunnel through a network that blocks tunnels."""
+
+
+@transport_group.command(name="show")
+def transport_show() -> None:
+    """Print the configured transport."""
+    cfg = load_config()
+    console.print(f"[bold]transport[/bold]  {cfg.transport.kind}")
+    if cfg.transport.kind != "direct":
+        console.print(f"  server      {cfg.transport.server or '[dim]not set[/dim]'}")
+        console.print(f"  local port  {cfg.transport.local_port}")
+        if cfg.transport.sni:
+            console.print(f"  TLS name    {cfg.transport.sni}")
+
+
+@transport_group.command(name="set")
+@click.argument("kind", type=click.Choice(["direct", "wstunnel"]))
+@click.option("--server", default="", help="wstunnel server URL, e.g. wss://host:443")
+@click.option("--local-port", default=51820, show_default=True, type=int)
+@click.option(
+    "--sni",
+    default="",
+    help="TLS server name to present, so the connection looks like ordinary HTTPS.",
+)
+@click.option("--path-prefix", default="", help="HTTP upgrade path prefix.")
+@click.option("--credentials", default="", help="USER[:PASS] for the HTTP upgrade.")
+@click.option("--verify-certificate", is_flag=True, default=False)
+def transport_set(
+    kind: str,
+    server: str,
+    local_port: int,
+    sni: str,
+    path_prefix: str,
+    credentials: str,
+    verify_certificate: bool,
+) -> None:
+    """Choose how the tunnel reaches its server."""
+    if kind == "wstunnel" and not server:
+        err_console.print(
+            "[yellow]wstunnel needs --server, the URL of the relay running on "
+            "your server, for example wss://vpn.example.com:443[/yellow]"
+        )
+        sys.exit(2)
+    path = configure_transport(
+        kind=kind,
+        server=server,
+        local_port=local_port,
+        sni=sni,
+        path_prefix=path_prefix,
+        credentials=credentials,
+        verify_certificate=verify_certificate,
+    )
+    console.print(f"[green]✓[/green] transport = {kind}. Written to {path}.")
+    if kind == "wstunnel":
+        console.print(
+            "[dim]  Run `vpnctl transport test` to prove the mechanism, then "
+            "`vpnctl connect`.[/dim]"
+        )
+
+
+@transport_group.command(name="test")
+@click.option("--rebuild", is_flag=True, default=False, help="Rebuild the test image.")
+def transport_test(rebuild: bool) -> None:
+    """Prove the obfuscated transport defeats a blocked port, in containers.
+
+    Builds both ends, blocks the tunnel's own UDP port so only TCP 443 is
+    open, and checks that a tunnel which fails directly succeeds through the
+    transport. The first half is what makes the second half mean anything.
+    """
+    console.print(
+        "[bold]Testing the transport against a blocked port…[/bold] "
+        "[dim](two containers; this machine is not touched)[/dim]"
+    )
+    with console.status("[dim]building both ends…[/dim]", spinner="dots"):
+        try:
+            result = run_bypass_test(rebuild=rebuild)
+        except BypassError as exc:
+            err_console.print(f"[red]{exc}[/red]")
+            sys.exit(1)
+
+    mark = lambda ok: "[green]yes[/green]" if ok else "[red]no[/red]"  # noqa: E731
+    console.print(f"  direct path blocked   {mark(result.direct_blocked)}")
+    console.print(f"  tunnel through 443    {mark(result.tunnelled)}")
+    console.print(f"  carried real traffic  {mark(result.carried_traffic)}")
+    if result.ok:
+        console.print(
+            "\n[green]✓[/green] The transport works: a tunnel that cannot "
+            "reach its own port still came up over TCP 443."
+        )
+    else:
+        err_console.print("\n[red]The transport did not get through.[/red]")
+        err_console.print(f"[dim]{result.output[-1200:]}[/dim]")
+        sys.exit(1)
+
+
 @main.command("setup")
 def setup() -> None:
     """Get this machine ready to connect: one question, then done."""
@@ -387,12 +512,23 @@ def docker_smoke_test(provider: str, rebuild: bool) -> None:
     show_default=True,
     help="Local path where the WireGuard client private key should live.",
 )
+@click.option(
+    "--with-wstunnel",
+    is_flag=True,
+    default=False,
+    help=(
+        "Also install the relay that carries the tunnel over TCP 443, and "
+        "point this machine's transport at it. Needed on networks that drop "
+        "WireGuard but carry HTTPS."
+    ),
+)
 def bootstrap_wireguard_vps_cmd(
     ssh_target: str,
     identity_file: str,
     endpoint_host: Optional[str],
     port: int,
     key_file: str,
+    with_wstunnel: bool,
 ) -> None:
     """Provision a VPS WireGuard server over SSH and update local config.
 
@@ -410,6 +546,7 @@ def bootstrap_wireguard_vps_cmd(
             endpoint_host=endpoint_host,
             port=port,
             key_file=key_file,
+            with_wstunnel=with_wstunnel,
         )
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr.strip() if exc.stderr else "no stderr"
@@ -690,8 +827,12 @@ _MENU: list[tuple[str, str, str]] = [
     ("Show status", "status", "Current tunnel and the last benchmark result"),
     ("Split tunnel", "split-tunnel-list", "The CIDRs that bypass the tunnel"),
     ("Disconnect", "disconnect", "Tear down any active tunnel"),
+    ("Diagnose this network", "diagnose",
+     "What this network will and will not carry, before connecting anything"),
     ("Test a tunnel in a sandbox", "docker-smoke-test",
      "Brings a tunnel up inside Docker to prove it works, leaving this machine alone"),
+    ("Test the bypass transport", "transport-test",
+     "Blocks the tunnel's own port in a container, then gets through anyway"),
     ("Run setup again", "setup", "Choose between a free VPN and your own server"),
     ("Exit", "exit", ""),
 ]
@@ -732,9 +873,12 @@ def run_menu(ctx: click.Context) -> int:
 
             console.clear()
             try:
-                # Nested subcommand, so it cannot be looked up on main by name.
+                # Nested subcommands, so they cannot be looked up on main
+                # by name.
                 if action == "split-tunnel-list":
                     ctx.invoke(split_tunnel_list)
+                elif action == "transport-test":
+                    ctx.invoke(transport_test)
                 else:
                     ctx.invoke(main.get_command(ctx, action))
             except SystemExit as exc:

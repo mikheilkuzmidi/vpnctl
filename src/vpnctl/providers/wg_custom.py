@@ -27,6 +27,7 @@ from vpnctl.providers.base import (
     ProviderStatus,
 )
 from vpnctl.probe import run_probe
+from vpnctl.transports import DirectTransport, Transport, TransportError
 from vpnctl.split_tunnel import (
     add_macos_routes,
     get_default_gateway,
@@ -60,6 +61,7 @@ class WgCustomAdapter(ProviderAdapter):
         provider_id: str = _PROVIDER_ID,
         mtu: Optional[int] = None,
         private_key: Optional[str] = None,
+        transport: Optional[Transport] = None,
     ) -> None:
         self._endpoint = endpoint
         self._public_key = public_key
@@ -82,6 +84,13 @@ class WgCustomAdapter(ProviderAdapter):
         # when a subclass fetches it from a provider. Decides which of the
         # doctor checks below can say anything useful.
         self._self_configured = private_key is None
+        # How the tunnel's UDP reaches the server. Direct unless the network
+        # between here and there will not carry it.
+        self._transport: Transport = transport or DirectTransport()
+        # What wg-quick should actually dial, which is the transport's local
+        # listener rather than the server when a transport is in use.
+        self._dial_endpoint: Optional[str] = None
+        self._transport_routes: list[str] = []
 
     @property
     def provider_id(self) -> str:
@@ -129,7 +138,7 @@ class WgCustomAdapter(ProviderAdapter):
             "[Peer]\n"
             f"PublicKey = {self._public_key}\n"
             f"AllowedIPs = {self._allowed_ips}\n"
-            f"Endpoint = {self._endpoint}\n"
+            f"Endpoint = {self._dial_endpoint or self._endpoint}\n"
             "PersistentKeepalive = 25\n"
         )
         return conf
@@ -289,6 +298,25 @@ class WgCustomAdapter(ProviderAdapter):
     def connect(self) -> None:
         self.prepare()
         self._pre_vpn_gateway = get_default_gateway()
+
+        # The transport starts first, while there is still a working default
+        # route: it has to resolve and reach the server, and after wg-quick
+        # runs neither DNS nor that route is available yet.
+        try:
+            self._dial_endpoint = self._transport.start(self._endpoint)
+            self._transport_routes = self._transport.excluded_ips()
+        except TransportError as exc:
+            self._transport.stop()
+            self._dial_endpoint = None
+            raise RuntimeError(f"{self._provider_id}: {exc}") from exc
+
+        # Pin the transport's own path outside the tunnel before the tunnel
+        # claims the default route. Without this the transport's connection to
+        # the server is routed into the tunnel it is carrying, and nothing
+        # moves in either direction.
+        if self._transport_routes and self._pre_vpn_gateway:
+            add_macos_routes(self._transport_routes, self._pre_vpn_gateway)
+
         self._tmp_conf = self._write_tmp_conf()
         result = subprocess.run(
             ["sudo", _WG_QUICK, "up", str(self._tmp_conf)],
@@ -306,6 +334,7 @@ class WgCustomAdapter(ProviderAdapter):
             )
         if result.returncode != 0:
             self._cleanup_tmp()
+            self._stop_transport()
             raise RuntimeError(
                 f"wg-quick up failed: {result.stderr.strip()}"
             )
@@ -347,8 +376,17 @@ class WgCustomAdapter(ProviderAdapter):
             f"your routing."
         )
 
+    def _stop_transport(self) -> None:
+        """Stop the transport and remove the routes that kept it reachable."""
+        if self._transport_routes:
+            remove_macos_routes(self._transport_routes)
+            self._transport_routes = []
+        self._transport.stop()
+        self._dial_endpoint = None
+
     def disconnect(self) -> None:
         if not shutil.which(_WG_QUICK):
+            self._stop_transport()
             return
         remove_macos_routes(self._excludes)
         created_tmp_conf = False
@@ -366,6 +404,7 @@ class WgCustomAdapter(ProviderAdapter):
             self._cleanup_tmp()
         elif created_tmp_conf:
             self._cleanup_tmp()
+        self._stop_transport()
         self._pre_vpn_gateway = None
 
     def _cleanup_tmp(self) -> None:
@@ -399,6 +438,9 @@ class WgCustomAdapter(ProviderAdapter):
                 issues.append(f"{tool} not found")
                 hints.append("brew install wireguard-tools")
                 break
+
+        for problem in self._transport.doctor():
+            issues.append(f"transport {self._transport.kind}: {problem}")
 
         if self._interface.startswith("utun"):
             hints.append(

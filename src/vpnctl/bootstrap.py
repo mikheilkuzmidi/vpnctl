@@ -10,7 +10,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from vpnctl.config import configure_wg_custom
+from vpnctl.config import configure_transport, configure_wg_custom
 
 _SSH_OPTIONS = ["-o", "StrictHostKeyChecking=accept-new"]
 _REMOTE_SCRIPT = "/tmp/vpnctl-setup-server.sh"
@@ -110,6 +110,7 @@ def _run_remote_setup(
     ssh_target: str,
     client_public_key: str,
     port: int,
+    with_wstunnel: bool = False,
 ) -> tuple[str, str]:
     remote_cmd = " ".join(
         [
@@ -117,6 +118,7 @@ def _run_remote_setup(
             shlex.quote(_REMOTE_SCRIPT),
             shlex.quote(client_public_key),
             shlex.quote(str(port)),
+            shlex.quote("yes" if with_wstunnel else "no"),
         ]
     )
     result = subprocess.run(
@@ -159,8 +161,14 @@ def bootstrap_wireguard_vps(
     endpoint_host: str | None = None,
     port: int = 51820,
     key_file: str = "~/.config/vpnctl/wg-custom.key",
+    with_wstunnel: bool = False,
 ) -> BootstrapResult:
-    """Provision the VPS and wire the local client config without connecting."""
+    """Provision the VPS and wire the local client config without connecting.
+
+    with_wstunnel also installs the relay that carries the tunnel over TCP
+    443, and points the local transport at it. That is what makes the server
+    usable from a network which drops WireGuard but carries HTTPS.
+    """
     _ensure_prereqs()
 
     identity_path = Path(identity_file).expanduser()
@@ -178,6 +186,7 @@ def bootstrap_wireguard_vps(
         ssh_target,
         client_public_key,
         port,
+        with_wstunnel=with_wstunnel,
     )
 
     if endpoint_host:
@@ -192,6 +201,16 @@ def bootstrap_wireguard_vps(
         public_key=server_public_key,
         key_file=str(key_path),
     )
+
+    if with_wstunnel:
+        # The relay listens on the same host, so the transport's server is
+        # that host on 443 while WireGuard keeps dialling its own port
+        # through it.
+        configure_transport(
+            kind="wstunnel",
+            server=f"wss://{endpoint.rpartition(':')[0]}:443",
+            local_port=port,
+        )
 
     return BootstrapResult(
         endpoint=endpoint,

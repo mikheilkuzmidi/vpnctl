@@ -13,6 +13,7 @@ import tomllib
 from typing import Optional
 
 from vpnctl.config import Config, results_path
+from vpnctl.transports import WstunnelSettings, build_transport
 from vpnctl.providers.base import ProbeResult, ProviderAdapter
 from vpnctl.providers.direct import DirectAdapter
 from vpnctl.providers.warp_masque import WarpMasqueAdapter
@@ -24,11 +25,26 @@ from vpnctl.toml_utils import dumps as toml_dumps
 def build_providers(cfg: Config) -> list[ProviderAdapter]:
     """Return the list of enabled provider adapters."""
     excludes = cfg.split_tunnel.excludes if cfg.split_tunnel.enabled else []
+    # One transport, shared by the WireGuard providers: it describes the
+    # network this machine is on, not the server it is dialling.
+    transport_settings = WstunnelSettings(
+        server=cfg.transport.server,
+        local_port=cfg.transport.local_port,
+        sni=cfg.transport.sni,
+        path_prefix=cfg.transport.path_prefix,
+        credentials=cfg.transport.credentials,
+        verify_certificate=cfg.transport.verify_certificate,
+    )
     providers: list[ProviderAdapter] = []
     if cfg.warp_masque.enabled:
         providers.append(WarpMasqueAdapter(excludes=excludes))
     if cfg.warp_wireguard.enabled:
-        providers.append(WarpWireguardAdapter(excludes=excludes))
+        providers.append(
+            WarpWireguardAdapter(
+                excludes=excludes,
+                transport=build_transport(cfg.transport.kind, transport_settings),
+            )
+        )
     if cfg.wg_custom.enabled:
         providers.append(
             WgCustomAdapter(
@@ -40,6 +56,7 @@ def build_providers(cfg: Config) -> list[ProviderAdapter]:
                 dns=cfg.wg_custom.dns,
                 allowed_ips=cfg.wg_custom.allowed_ips,
                 excludes=excludes,
+                transport=build_transport(cfg.transport.kind, transport_settings),
             )
         )
     if cfg.direct.enabled:

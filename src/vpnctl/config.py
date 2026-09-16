@@ -102,6 +102,24 @@ class WgCustomConfig:
 
 
 @dataclass
+class TransportConfig:
+    """How a tunnel's UDP gets to its server.
+
+    "direct" sends it straight out, which is what works almost everywhere.
+    "wstunnel" wraps it in a WebSocket over TLS, for a network that drops
+    the direct attempt.
+    """
+
+    kind: str = "direct"
+    server: str = ""
+    local_port: int = 51820
+    sni: str = ""
+    path_prefix: str = ""
+    credentials: str = ""
+    verify_certificate: bool = False
+
+
+@dataclass
 class Config:
     policy: PolicyConfig = field(default_factory=PolicyConfig)
     warp_masque: WarpProviderConfig = field(default_factory=WarpProviderConfig)
@@ -109,6 +127,7 @@ class Config:
     wg_custom: WgCustomConfig = field(default_factory=WgCustomConfig)
     direct: WarpProviderConfig = field(default_factory=WarpProviderConfig)
     split_tunnel: SplitTunnelConfig = field(default_factory=SplitTunnelConfig)
+    transport: TransportConfig = field(default_factory=TransportConfig)
 
 
 def config_path() -> Path:
@@ -185,6 +204,17 @@ def load_config() -> Config:
         allowed_ips=str(custom_raw.get("allowed_ips", "0.0.0.0/0")),
     )
 
+    tr_raw = raw.get("transport", {})
+    transport = TransportConfig(
+        kind=str(tr_raw.get("kind", "direct")),
+        server=str(tr_raw.get("server", "")),
+        local_port=int(tr_raw.get("local_port", 51820)),
+        sni=str(tr_raw.get("sni", "")),
+        path_prefix=str(tr_raw.get("path_prefix", "")),
+        credentials=str(tr_raw.get("credentials", "")),
+        verify_certificate=bool(tr_raw.get("verify_certificate", False)),
+    )
+
     st_raw = raw.get("split_tunnel", {})
     split_tunnel = SplitTunnelConfig(
         enabled=bool(st_raw.get("enabled", False)),
@@ -198,6 +228,7 @@ def load_config() -> Config:
         warp_wireguard=warp_wireguard,
         wg_custom=wg_custom,
         split_tunnel=split_tunnel,
+        transport=transport,
     )
 
 
@@ -236,5 +267,30 @@ def set_provider_enabled(provider_id: str, enabled: bool) -> Path:
     raw = _load_raw_config()
     providers = raw.setdefault("providers", {})
     providers.setdefault(provider_id, {})["enabled"] = enabled
+    _save_raw_config(raw)
+    return _CONFIG_FILE
+
+
+def configure_transport(
+    *,
+    kind: str,
+    server: str = "",
+    local_port: int = 51820,
+    sni: str = "",
+    path_prefix: str = "",
+    credentials: str = "",
+    verify_certificate: bool = False,
+) -> Path:
+    """Write the transport section, for a network that blocks the direct path."""
+    raw = _load_raw_config()
+    raw["transport"] = {
+        "kind": kind,
+        "server": server,
+        "local_port": local_port,
+        "sni": sni,
+        "path_prefix": path_prefix,
+        "credentials": credentials,
+        "verify_certificate": verify_certificate,
+    }
     _save_raw_config(raw)
     return _CONFIG_FILE
