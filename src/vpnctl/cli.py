@@ -43,7 +43,7 @@ from vpnctl.selector import (
 from vpnctl.bypass import BypassError, run_bypass_test
 from vpnctl.netcheck import run_checks
 from vpnctl.setup_wizard import needs_setup, run_setup
-from vpnctl.split_tunnel import list_warp_excludes
+from vpnctl.split_tunnel import list_warp_excludes, public_excludes
 from vpnctl.toml_utils import dumps as toml_dumps
 from vpnctl.tui import run_tui
 from vpnctl.watch import run_watch
@@ -106,6 +106,24 @@ def doctor() -> None:
         # look identical.
         for hint in result.hints:
             console.print(f"    [cyan]hint:[/cyan]  {hint}")
+
+    # A config-level check rather than a provider one: it is about what the
+    # tunnel is asked to carry, not whether a provider can be reached.
+    if cfg.split_tunnel.enabled:
+        leaking = public_excludes(cfg.split_tunnel.excludes)
+        if leaking:
+            console.print(
+                f"\n[yellow]Split tunnel sends {len(leaking)} public range(s) "
+                "outside the tunnel:[/yellow]"
+            )
+            for cidr in leaking:
+                console.print(f"    {cidr}")
+            console.print(
+                "[dim]  Traffic to those addresses is not protected. Private "
+                "ranges are excluded as a matter of course, so they are not "
+                "listed; these are public. Remove one with: "
+                "vpnctl split-tunnel remove CIDR[/dim]"
+            )
 
     if all_ok:
         console.print("\n[green]All checks passed.[/green]")

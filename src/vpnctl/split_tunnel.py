@@ -19,6 +19,8 @@ in ~/.config/vpnctl/config.toml.
 
 from __future__ import annotations
 
+import ipaddress
+
 import re
 import shutil
 import subprocess
@@ -186,3 +188,40 @@ def restore_default_route(gateway: str) -> None:
         text=True,
         check=False,
     )
+
+
+# ---------------------------------------------------------------------------
+# Leak review
+# ---------------------------------------------------------------------------
+
+# Excluding these is ordinary and expected: they are the local network, and
+# routing them through a tunnel would break printers, NAS boxes and the router
+# itself. Excluding anything else means traffic to a public address leaving
+# unprotected, which is a decision rather than housekeeping.
+_PRIVATE_RANGES = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("100.64.0.0/10"),  # CGNAT, which Tailscale uses
+)
+
+
+def public_excludes(excludes: list[str]) -> list[str]:
+    """The excluded ranges that are public addresses, so leave the tunnel.
+
+    Returned so a caller can say which ones they are rather than warning in
+    general terms. A range that cannot be parsed is reported too: it is not
+    doing anything useful as a route either way.
+    """
+    leaking: list[str] = []
+    for entry in excludes:
+        try:
+            network = ipaddress.ip_network(entry, strict=False)
+        except ValueError:
+            leaking.append(entry)
+            continue
+        if not any(network.subnet_of(private) for private in _PRIVATE_RANGES):
+            leaking.append(entry)
+    return leaking

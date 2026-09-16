@@ -79,23 +79,35 @@ says which of them applies. On the university network this was developed
 against, it reports:
 
 ```
-  dns                            ok       resolves
-  tls:ordinary:github.com:443    ok       TLS TLSv1.3
-  udp:stun.cloudflare.com:3478   ok       replied, 32 bytes
-  tls:tunnel:Riseup's VPN API    no       ConnectionResetError
-  tls:tunnel:a Riseup gateway    no       timed out
-  tls:tunnel:the Tor Project     no       ConnectionResetError
+  dns                                     ok   resolves
+  tls:ordinary:github.com:443             ok   TLS TLSv1.3
+  tls:cloudflare:api.cloudflareclient.com ok   TLS TLSv1.3
+  udp:stun.cloudflare.com:3478            ok   replied, 32 bytes
+  tls:tunnel:Riseup's VPN API             no   ConnectionResetError
+  tls:tunnel:a Riseup gateway             no   timed out
+  tls:tunnel:the Tor Project              no   ConnectionResetError
 
 This network filters VPN destinations. Ordinary HTTPS works, but none of the
 3 tunnel endpoints tested would even complete a TLS handshake. Outbound UDP
 itself is fine, so the block is about where the traffic is going, not what it
 looks like.
+
+Try warp-wireguard first. Cloudflare's network is reachable from here, and a
+network that blocklists VPN providers usually cannot afford to blocklist
+Cloudflare.
 ```
 
-That last sentence is the useful part. Arbitrary UDP was fine and TCP to
-ordinary hosts was fine, so the network is filtering destinations rather than
-recognising protocols. Which means disguising WireGuard's packets is not the
-fix: sending them somewhere nobody has blacklisted is.
+Two things worth taking from that. The network is filtering destinations
+rather than recognising protocols, so disguising WireGuard's packets is not
+the fix; sending them somewhere nobody has blacklisted is. And "this network
+blocks VPNs" is too coarse a conclusion to act on: blocklisting one
+provider's gateways is cheap, while blocklisting Cloudflare's anycast ranges
+breaks too much ordinary traffic for most networks to attempt.
+
+On the university network this was developed against, `warp-wireguard`
+connects and carries traffic while Riseup and Tor are both dead. So reach for
+the free hosted provider first, and for a transport only when that is
+blocked too.
 
 ### The transport
 
@@ -121,7 +133,9 @@ vpnctl connect
 ```
 
 It has to be your own server. The filtering is by destination, so a public
-endpoint stays blocked however the traffic is shaped.
+endpoint stays blocked however the traffic is shaped. That is also why the
+transport is the second thing to try rather than the first: if WARP works,
+nothing needs disguising.
 
 One detail that breaks everything when missed: once the tunnel owns the
 default route, the transport's own connection to the server would be routed
@@ -285,7 +299,7 @@ back a machine with no internet.
 
 ```bash
 pip install -e '.[dev]'
-pytest                 # 142 tests, no network access
+pytest                 # 151 tests, no network access
 ```
 
 Tests never reach the network and never change routing. The Riseup fixture is

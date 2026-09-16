@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 from click.testing import CliRunner
 
 from vpnctl.cli import main
-from vpnctl.providers.base import ProbeResult, ProviderStatus
+from vpnctl.providers.base import DoctorResult, ProbeResult, ProviderStatus
 
 
 def _make_result(pid: str, rtt: float, score: float, error=None) -> ProbeResult:
@@ -474,3 +474,58 @@ def test_status_is_quiet_when_a_tunnel_is_up(tmp_path, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert "not protected" not in result.output
+
+
+def test_public_split_tunnel_excludes_are_flagged():
+    """Private ranges are housekeeping. Public ones are unprotected traffic."""
+    from vpnctl.split_tunnel import public_excludes
+
+    excludes = [
+        "192.168.0.0/16",   # the LAN
+        "10.0.0.0/8",       # ditto
+        "172.16.0.0/12",    # ditto
+        "100.64.0.0/10",    # CGNAT, which Tailscale uses
+        "34.107.0.0/16",    # public: this one leaves the tunnel
+        "162.159.0.0/16",   # public
+    ]
+    assert public_excludes(excludes) == ["34.107.0.0/16", "162.159.0.0/16"]
+
+
+def test_a_single_public_host_counts_as_a_leak():
+    from vpnctl.split_tunnel import public_excludes
+
+    assert public_excludes(["8.8.8.8/32"]) == ["8.8.8.8/32"]
+    assert public_excludes(["192.168.1.5/32"]) == []
+
+
+def test_an_unparseable_exclude_is_reported_not_ignored():
+    """It is not working as a route either, so silence would be wrong."""
+    from vpnctl.split_tunnel import public_excludes
+
+    assert public_excludes(["not-a-cidr"]) == ["not-a-cidr"]
+
+
+def test_doctor_warns_about_public_excludes(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        "[split_tunnel]\nenabled = true\n"
+        'excludes = ["192.168.0.0/16", "34.107.0.0/16"]\n'
+    )
+    monkeypatch.setattr("vpnctl.config._CONFIG_FILE", cfg)
+
+    adapter = MagicMock()
+    adapter.provider_id = "warp-wireguard"
+    adapter.is_control = False
+    adapter.doctor.return_value = DoctorResult(
+        provider_id="warp-wireguard", ok=True
+    )
+
+    with patch("vpnctl.cli.build_providers", return_value=[adapter]):
+        result = CliRunner().invoke(main, ["doctor"])
+
+    assert result.exit_code == 0, result.output
+    assert "34.107.0.0/16" in result.output
+    assert "not protected" in result.output
+    # The private range is not worth mentioning, and mentioning it would bury
+    # the one that matters.
+    assert "192.168.0.0/16" not in result.output
