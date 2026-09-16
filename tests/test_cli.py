@@ -529,3 +529,44 @@ def test_doctor_warns_about_public_excludes(tmp_path, monkeypatch):
     # The private range is not worth mentioning, and mentioning it would bury
     # the one that matters.
     assert "192.168.0.0/16" not in result.output
+
+
+def test_connect_does_not_benchmark_when_there_is_no_ranking(tmp_path, monkeypatch):
+    """Connect connects.
+
+    It used to run a full benchmark whenever nothing was cached, which meant
+    the first thing a new user asked for took a couple of minutes and a
+    password prompt per provider before anything happened. Benchmarking is a
+    separate thing you choose to do.
+    """
+    _minimal_config(tmp_path, monkeypatch)
+
+    warp = MagicMock()
+    warp.provider_id = "warp-wireguard"
+    warp.is_control = False
+    direct = MagicMock()
+    direct.provider_id = "direct"
+    direct.is_control = True
+
+    with patch("vpnctl.cli.load_results", return_value=[]), \
+         patch("vpnctl.cli.build_providers", return_value=[direct, warp]), \
+         patch("vpnctl.cli.run_benchmark", side_effect=AssertionError("benchmarked!")):
+        result = CliRunner().invoke(main, ["connect"])
+
+    assert result.exit_code == 0, result.output
+    warp.connect.assert_called_once()
+    direct.connect.assert_not_called()
+
+
+def test_connect_says_so_when_nothing_is_enabled(tmp_path, monkeypatch):
+    _minimal_config(tmp_path, monkeypatch)
+    direct = MagicMock()
+    direct.provider_id = "direct"
+    direct.is_control = True
+
+    with patch("vpnctl.cli.load_results", return_value=[]), \
+         patch("vpnctl.cli.build_providers", return_value=[direct]):
+        result = CliRunner().invoke(main, ["connect"])
+
+    assert result.exit_code == 1
+    assert "setup" in result.output

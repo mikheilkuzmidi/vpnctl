@@ -211,36 +211,37 @@ def connect(provider: Optional[str]) -> None:
             )
             sys.exit(1)
     else:
-        results = load_results()
-        winner = pick_winner(results, controls=control_provider_ids(providers))
-        if winner is None:
-            console.print(
-                "[yellow]No cached benchmark results.[/yellow] "
-                "Running benchmark first…"
-            )
+        controls = control_provider_ids(providers)
+        winner = pick_winner(load_results(), controls=controls)
+        tunnels = [p for p in providers if not p.is_control]
 
-            def _log(msg: str) -> None:
-                console.print(f"  {msg}")
-
-            results = run_benchmark(providers, status_cb=_log)
-            save_results(results)
-            winner = pick_winner(
-                results, controls=control_provider_ids(providers)
-            )
-
-        if winner is None:
-            err_console.print("[red]All providers failed, so there is nothing to connect.[/red]")
-            sys.exit(1)
-
-        target = next(
-            (p for p in providers if p.provider_id == winner.provider_id),
-            None,
-        )
-        if target is None:
+        if not tunnels:
             err_console.print(
-                f"Winner '{winner.provider_id}' not found in provider list."
+                "[red]No VPN provider is enabled, so there is nothing to "
+                "connect to.[/red] Run `vpnctl setup`."
             )
             sys.exit(1)
+
+        target = None
+        if winner is not None:
+            target = next(
+                (p for p in providers if p.provider_id == winner.provider_id),
+                None,
+            )
+
+        if target is None:
+            # Connect connects. It used to run a full benchmark when there
+            # was nothing cached, which meant the first thing a new user
+            # asked for took a couple of minutes and a password prompt per
+            # provider before anything happened. Benchmarking is a separate
+            # thing you choose to do; without a ranking, take the first
+            # enabled provider and go.
+            target = tunnels[0]
+            if len(tunnels) > 1:
+                console.print(
+                    f"[dim]No benchmark yet, so using {target.provider_id}. "
+                    "`vpnctl benchmark` ranks them.[/dim]"
+                )
 
     for adapter in providers:
         if adapter is target:

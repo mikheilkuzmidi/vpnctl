@@ -542,6 +542,16 @@ def run_tui() -> None:
     state = ProbeState()
     stop = threading.Event()
 
+    # Seed the provider status before the first frame. The probe thread fills
+    # it in, but its first pass takes several seconds behind a ping and a
+    # download, and until then the header said "not connected" on a machine
+    # that was connected: the one thing the screen must not get wrong.
+    for provider in providers:
+        try:
+            state.provider_status[provider.provider_id] = provider.status()
+        except Exception:
+            state.provider_status[provider.provider_id] = ProviderStatus.UNKNOWN
+
     probe_thread = threading.Thread(
         target=_probe_loop, args=(state, stop, providers), daemon=True
     )
