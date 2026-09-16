@@ -264,3 +264,15 @@ def test_split_tunnel_enable_and_disable_persist(tmp_path, monkeypatch):
 
     assert CliRunner().invoke(main, ["split-tunnel", "disable"]).exit_code == 0
     assert "enabled = false" in cfg.read_text()
+
+
+def test_results_table_keeps_its_columns_aligned(capsys):
+    """The rank cell must not be a glyph whose width terminals disagree on."""
+    from vpnctl.cli import _print_results_table
+
+    _print_results_table([_make_result("direct", 13.1, 96.16)])
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    header = next(line for line in lines if "Provider" in line)
+    row = next(line for line in lines if "direct" in line)
+    assert row.index("direct") == header.index("Provider")
+    assert row.lstrip().startswith("1")

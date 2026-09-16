@@ -624,9 +624,13 @@ def _print_results_table(results) -> None:
                 f"[red]{r.error}[/red]",
             )
         else:
-            rank_marker = "🏆" if i == 1 else str(i)
+            # The rank is a plain number, and the winner is the bold row. An
+            # emoji used to mark first place, but terminals disagree about how
+            # many columns one occupies, and rich had already padded the cell
+            # for two: wherever the terminal rendered it as one, every column
+            # to its right in that row sat a cell left of the header.
             table.add_row(
-                rank_marker,
+                str(i),
                 r.provider_id,
                 f"{r.score:.2f}",
                 f"{r.median_rtt_ms:.1f}",
@@ -634,6 +638,7 @@ def _print_results_table(results) -> None:
                 f"{r.loss_pct:.1f}",
                 f"{r.throughput_mbps:.2f}",
                 "[green]ok[/green]",
+                style="bold" if i == 1 else None,
             )
 
     console.print(table)
