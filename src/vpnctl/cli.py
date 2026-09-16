@@ -254,9 +254,26 @@ def status() -> None:
     providers = build_providers(cfg)
 
     console.print("[bold]Provider status[/bold]")
+    tunnelled = False
     for adapter in providers:
         s = adapter.status()
+        if adapter.is_control:
+            # The control always reports connected, because the unprotected
+            # path is always there. Saying so plainly matters: read as a
+            # provider row it looks like "you are on a VPN", which is the one
+            # thing it is not.
+            console.print(
+                f"  {adapter.provider_id}  {_status_badge(s)}  "
+                "[dim](the plain connection, measured as a control)[/dim]"
+            )
+            continue
         console.print(f"  {adapter.provider_id}  {_status_badge(s)}")
+        if s == ProviderStatus.CONNECTED:
+            tunnelled = True
+
+    if not tunnelled:
+        console.print("\n[yellow]No tunnel is up.[/yellow] This machine's "
+                      "traffic is not protected.")
 
     results = load_results()
     if results:

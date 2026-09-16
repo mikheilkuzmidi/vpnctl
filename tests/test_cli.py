@@ -432,3 +432,45 @@ def test_pick_winner_returns_nothing_when_only_a_control_succeeded():
         _make_result("warp-wireguard", 0.0, 0.0, error="no handshake"),
     ]
     assert pick_winner(results) is None
+
+
+def test_status_says_plainly_when_nothing_is_protected(tmp_path, monkeypatch):
+    """The control reports connected because the plain path always is.
+
+    Read as a provider row that looks like "you are on a VPN", which is
+    exactly what it is not.
+    """
+    _minimal_config(tmp_path, monkeypatch)
+
+    direct = MagicMock()
+    direct.provider_id = "direct"
+    direct.is_control = True
+    direct.status.return_value = ProviderStatus.CONNECTED
+    warp = MagicMock()
+    warp.provider_id = "warp-wireguard"
+    warp.is_control = False
+    warp.status.return_value = ProviderStatus.DISCONNECTED
+
+    with patch("vpnctl.cli.build_providers", return_value=[direct, warp]), \
+         patch("vpnctl.cli.load_results", return_value=[]):
+        result = CliRunner().invoke(main, ["status"])
+
+    assert result.exit_code == 0, result.output
+    assert "not protected" in result.output
+    assert "control" in result.output
+
+
+def test_status_is_quiet_when_a_tunnel_is_up(tmp_path, monkeypatch):
+    _minimal_config(tmp_path, monkeypatch)
+
+    warp = MagicMock()
+    warp.provider_id = "warp-wireguard"
+    warp.is_control = False
+    warp.status.return_value = ProviderStatus.CONNECTED
+
+    with patch("vpnctl.cli.build_providers", return_value=[warp]), \
+         patch("vpnctl.cli.load_results", return_value=[]):
+        result = CliRunner().invoke(main, ["status"])
+
+    assert result.exit_code == 0, result.output
+    assert "not protected" not in result.output
