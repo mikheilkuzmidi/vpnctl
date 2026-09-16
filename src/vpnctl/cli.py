@@ -98,11 +98,20 @@ def doctor() -> None:
             console.print(f"[red]✗[/red] {result.provider_id}")
             for issue in result.issues:
                 console.print(f"    [red]issue:[/red] {issue}")
-            for hint in result.hints:
-                console.print(f"    [cyan]hint:[/cyan]  {hint}")
+        # Hints are printed whether or not the check passed. Several of them
+        # say something a passing provider still needs to hear, like which
+        # gateway it would use or that its credential has not been fetched
+        # yet, and suppressing those made a ready provider and an unused one
+        # look identical.
+        for hint in result.hints:
+            console.print(f"    [cyan]hint:[/cyan]  {hint}")
 
     if all_ok:
         console.print("\n[green]All checks passed.[/green]")
+        console.print(
+            "[dim]If a connection still fails, `vpnctl diagnose` measures "
+            "what this network is blocking.[/dim]"
+        )
     else:
         console.print("\n[yellow]Some checks failed - see hints above.[/yellow]")
         sys.exit(1)

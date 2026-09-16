@@ -1,16 +1,27 @@
 """Working out what this network will and will not carry.
 
 Written because diagnosing one blocked network by hand took a long time and
-produced a result worth keeping: arbitrary outbound UDP was fine, STUN
-answered on two different ports, TCP 22 and 443 to ordinary hosts were fine,
-and every known VPN endpoint was silently unreachable. Tor's relays and all
-21 of Riseup's gateways behaved identically: TCP connected, then the
-connection died just after the TLS client hello.
+produced a result worth keeping. On a university network: arbitrary outbound
+UDP was fine, STUN answered on two different ports, and TCP 22 and 443 to
+ordinary hosts were fine. Riseup's API, all 21 of its gateways, and Tor's
+relays behaved identically to each other: TCP connected, then the connection
+died just after the TLS client hello.
 
-That pattern is the useful one, because it says the network is filtering
-destinations rather than understanding protocols, and that tells you which
-transport to reach for. None of these checks changes any routing, so this is
-safe to run before connecting anything.
+But Cloudflare WARP worked on that same network, which is the finding that
+changes what to recommend. Blocklisting one VPN provider's gateways is cheap;
+blocklisting Cloudflare's anycast ranges breaks too much ordinary traffic to
+be worth it. So "this network blocks VPNs" is too coarse a conclusion to act
+on, and the checks below separate the destinations that are filtered from the
+ones that are not.
+
+A warning about measuring this. An early attempt here concluded WARP was
+blocked too, and it was wrong: the test config was missing
+PersistentKeepalive and gave the handshake too few seconds. A silent tunnel
+means the peer did not answer, not that the network stopped it, and telling
+those apart takes a config known to be correct.
+
+None of these checks changes any routing, so this is safe to run before
+connecting anything.
 """
 
 from __future__ import annotations
@@ -32,6 +43,13 @@ _STUN_TARGETS = (("stun.cloudflare.com", 3478), ("stun.l.google.com", 19302))
 
 # Ordinary hosts, to establish what the network does when it is not objecting.
 _ORDINARY = (("github.com", 443), ("example.com", 443))
+
+# Cloudflare's device API, checked separately from the ordinary hosts because
+# its result carries a specific recommendation. A network can blacklist
+# Riseup's gateways cheaply, but blacklisting Cloudflare's anycast ranges
+# breaks so much ordinary traffic that few try, which is why WARP is worth
+# attempting even where every other tunnel endpoint is dead.
+_WARP_API = ("api.cloudflareclient.com", 443)
 
 # Hosts that exist to carry tunnels. A network that treats these differently
 # from the ordinary ones is filtering by destination.
@@ -78,6 +96,10 @@ class NetworkReport:
         return len(self._named("tls:tunnel"))
 
     @property
+    def cloudflare_reachable(self) -> bool:
+        return any(c.ok for c in self._named("tls:cloudflare"))
+
+    @property
     def filters_tunnels(self) -> bool:
         """Ordinary destinations work and tunnel destinations do not."""
         return (
@@ -115,14 +137,26 @@ class NetworkReport:
 
     def recommendation(self) -> str:
         if self.filters_tunnels:
-            return (
-                "Use a transport, and point it at a server of your own rather "
-                "than a public one: the filtering is by destination, so any "
-                "address on a public blocklist stays blocked no matter how the "
-                "traffic is disguised.\n"
+            advice = []
+            if self.cloudflare_reachable:
+                # Measured: a network that resets TLS to Riseup and Tor still
+                # carried Cloudflare WARP, because blocking Cloudflare's
+                # anycast ranges breaks too much else to be worth it.
+                advice.append(
+                    "Try warp-wireguard first. Cloudflare's network is "
+                    "reachable from here, and a network that blocklists VPN "
+                    "providers usually cannot afford to blocklist Cloudflare:\n"
+                    "  vpnctl docker-smoke-test --provider warp-wireguard"
+                )
+            advice.append(
+                "For any other provider, use a transport, and point it at a "
+                "server of your own rather than a public one: the filtering is "
+                "by destination, so an address on a public blocklist stays "
+                "blocked no matter how the traffic is disguised.\n"
                 "  vpnctl transport set wstunnel --server wss://your-host:443\n"
                 "  vpnctl transport test        (proves it works, in containers)"
             )
+            return "\n\n".join(advice)
         if self.tunnel_hosts_reachable < self.tunnel_hosts_tested:
             return (
                 "Try connecting directly first. If it fails, "
@@ -204,6 +238,11 @@ def run_checks() -> NetworkReport:
         report.checks.append(
             Check(f"tls:ordinary:{host}:{port}", result.ok, result.detail)
         )
+
+    warp_api = _tcp_tls(*_WARP_API)
+    report.checks.append(
+        Check(f"tls:cloudflare:{_WARP_API[0]}", warp_api.ok, warp_api.detail)
+    )
 
     for host, port in _STUN_TARGETS:
         result = _stun(host, port)

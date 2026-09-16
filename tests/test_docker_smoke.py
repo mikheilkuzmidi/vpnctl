@@ -155,3 +155,52 @@ def test_an_unknown_provider_is_refused(tmp_path, monkeypatch):
     _fake_docker(monkeypatch, stdout="")
     with pytest.raises(docker_smoke.NotConfigured, match="warp-wireguard"):
         docker_smoke.run_docker_smoke(cfg, provider_id="warp-masque")
+
+
+def test_openvpn_providers_use_their_own_entrypoint(tmp_path, monkeypatch):
+    """Riseup speaks OpenVPN, which needs a different container entrypoint."""
+    from vpnctl import riseup as riseup_mod
+    from tests.test_riseup import _bundle  # the real API fixture
+
+    cfg = _cfg(tmp_path, monkeypatch)
+    bundle_file = tmp_path / "riseup-bundle.json"
+    riseup_mod.save(_bundle(), bundle_file)
+
+    calls = _fake_docker(monkeypatch, stdout="PUBLIC_IP=198.51.100.50\nDNS=ok\n")
+    monkeypatch.setattr(
+        docker_smoke,
+        "_adapter_for",
+        lambda cfg, pid: __import__(
+            "vpnctl.providers.riseup", fromlist=["RiseupAdapter"]
+        ).RiseupAdapter(pid, bundle_path=bundle_file),
+    )
+    with patch("vpnctl.providers.riseup.find_openvpn", return_value="/usr/sbin/openvpn"):
+        result = docker_smoke.run_docker_smoke(cfg, provider_id="riseup")
+
+    run = next(c for c in calls if c[:3] == ["docker", "run", "--rm"])
+    assert "--entrypoint" in run
+    assert run[run.index("--entrypoint") + 1].endswith("vpnctl-openvpn-smoke")
+    # openvpn sets the resolver itself, so the WireGuard-only hint is absent.
+    assert not any(str(a).startswith("SMOKE_DNS") for a in run)
+    assert run[-1] == "/config/openvpn.conf"
+    assert result.egress_changed
+
+
+def test_a_tunnel_that_never_came_up_is_reported_as_such(tmp_path, monkeypatch):
+    from vpnctl import riseup as riseup_mod
+    from tests.test_riseup import _bundle
+
+    cfg = _cfg(tmp_path, monkeypatch)
+    bundle_file = tmp_path / "riseup-bundle.json"
+    riseup_mod.save(_bundle(), bundle_file)
+    _fake_docker(monkeypatch, stdout="NO_TUNNEL=1\n", returncode=3)
+    monkeypatch.setattr(
+        docker_smoke,
+        "_adapter_for",
+        lambda cfg, pid: __import__(
+            "vpnctl.providers.riseup", fromlist=["RiseupAdapter"]
+        ).RiseupAdapter(pid, bundle_path=bundle_file),
+    )
+    with patch("vpnctl.providers.riseup.find_openvpn", return_value="/usr/sbin/openvpn"):
+        with pytest.raises(docker_smoke.NoHandshake, match="never came up"):
+            docker_smoke.run_docker_smoke(cfg, provider_id="riseup")

@@ -23,6 +23,7 @@ from pathlib import Path
 import httpx
 
 from vpnctl.config import Config
+from vpnctl.providers.riseup import RiseupAdapter
 from vpnctl.providers.warp_wireguard import WarpWireguardAdapter
 from vpnctl.providers.wg_custom import WgCustomAdapter
 
@@ -34,7 +35,11 @@ _TRACE_URL = "https://1.1.1.1/cdn-cgi/trace"
 
 # Every provider the sandbox can exercise. A provider qualifies by being a
 # WireGuard tunnel that can render a config: that is all the container needs.
-SANDBOXABLE = ("warp-wireguard", "wireguard-custom")
+SANDBOXABLE = ("warp-wireguard", "wireguard-custom", "riseup", "calyx")
+
+# The two tunnel programs need different entrypoints and different config
+# filenames, but the checks they run and the lines they print are the same.
+_OPENVPN_PROVIDERS = ("riseup", "calyx")
 
 
 @dataclass
@@ -145,6 +150,13 @@ def _adapter_for(cfg: Config, provider_id: str):
     is why this returns the same adapters used for a real connection rather
     than a sandbox-specific reimplementation of them.
     """
+    if provider_id in _OPENVPN_PROVIDERS:
+        return RiseupAdapter(
+            provider_id,
+            location=cfg.riseup.location,
+            protocol=cfg.riseup.protocol,
+            port=cfg.riseup.port,
+        )
     if provider_id == "warp-wireguard":
         return WarpWireguardAdapter()
     if provider_id == "wireguard-custom":
@@ -205,11 +217,26 @@ def run_docker_smoke(
     repo_root = _repo_root()
     _ensure_image(repo_root, rebuild=rebuild)
 
+    openvpn = provider_id in _OPENVPN_PROVIDERS
+
     with tempfile.TemporaryDirectory(prefix="vpnctl-docker-") as tmpdir:
-        conf_path = Path(tmpdir) / "wgsmoke.conf"
-        # Without with_dns=False, wg-quick tries resolvconf inside the
-        # container and the tunnel never comes up at all.
-        conf_path.write_text(adapter.render_config(with_dns=False))
+        if openvpn:
+            conf_path = Path(tmpdir) / "openvpn.conf"
+            conf_path.write_text(adapter.render_config())
+            entrypoint = ["--entrypoint", "/usr/local/bin/vpnctl-openvpn-smoke"]
+            # openvpn installs the provider's resolver itself, so there is
+            # nothing for the entrypoint to set.
+            env = []
+        else:
+            conf_path = Path(tmpdir) / "wgsmoke.conf"
+            # Without with_dns=False, wg-quick tries resolvconf inside the
+            # container and the tunnel never comes up at all.
+            conf_path.write_text(adapter.render_config(with_dns=False))
+            entrypoint = []
+            # The resolver to install inside the container once the tunnel is
+            # up, so DNS is checked rather than merely avoided. It is the
+            # provider's own, which is the one a real connection would use.
+            env = ["-e", f"SMOKE_DNS={adapter.dns or '1.1.1.1'}"]
         conf_path.chmod(0o600)
 
         run = _run(
@@ -221,16 +248,12 @@ def run_docker_smoke(
                 "NET_ADMIN",
                 "--device",
                 "/dev/net/tun",
-                "-e",
-                # The resolver to install inside the container once the
-                # tunnel is up, so DNS is checked rather than merely avoided.
-                # It is the provider's own, which is the one a real connection
-                # would use.
-                f"SMOKE_DNS={adapter.dns or '1.1.1.1'}",
+                *env,
+                *entrypoint,
                 "-v",
                 f"{tmpdir}:/config:ro",
                 _IMAGE,
-                "/config/wgsmoke.conf",
+                f"/config/{conf_path.name}",
             ]
         )
 
@@ -243,6 +266,13 @@ def run_docker_smoke(
             "The interface, keys and routes are all fine: packets went out and "
             "nothing came back. That is what a network blocking WireGuard "
             "looks like, and also what a server that is down looks like.\n"
+            f"output:\n{combined}"
+        )
+    if "NO_TUNNEL=1" in combined:
+        raise NoHandshake(
+            f"{provider_id}: the tunnel never came up. openvpn either exited "
+            "or never finished its initialisation sequence, which is what a "
+            "blocked or unreachable gateway looks like from here.\n"
             f"output:\n{combined}"
         )
     if "NO_EGRESS=1" in combined:
@@ -283,7 +313,7 @@ def run_docker_smoke(
     # the machine it was sent to. A hosted provider does not, because it
     # egresses from whichever of its own addresses it chooses.
     if provider_id == "wireguard-custom":
-        expected = _expected_public_ip(cfg.wg_custom.endpoint)
+        expected = _expected_public_ip(cfg.wg_custom.endpoint)  # noqa: E501
         if result.public_ip != expected:
             raise RuntimeError(
                 "The tunnel carried traffic, but not to your server.\n"

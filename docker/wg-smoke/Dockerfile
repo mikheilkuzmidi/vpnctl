@@ -9,13 +9,15 @@ RUN apt-get update \
         iproute2 \
         iptables \
         iputils-ping \
+        openvpn \
         resolvconf \
         wireguard-tools \
         wireguard-go \
     && rm -rf /var/lib/apt/lists/*
 
 COPY docker/wg-smoke/entrypoint.sh /usr/local/bin/vpnctl-wg-smoke
+COPY docker/wg-smoke/openvpn.sh /usr/local/bin/vpnctl-openvpn-smoke
 
-RUN chmod +x /usr/local/bin/vpnctl-wg-smoke
+RUN chmod +x /usr/local/bin/vpnctl-wg-smoke /usr/local/bin/vpnctl-openvpn-smoke
 
 ENTRYPOINT ["/usr/local/bin/vpnctl-wg-smoke"]

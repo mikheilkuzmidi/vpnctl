@@ -62,3 +62,37 @@ def test_partial_filtering_is_reported_as_such():
 
 def test_nothing_measured_says_so():
     assert "Nothing was measured" in NetworkReport().verdict()
+
+
+def test_warp_is_recommended_when_cloudflare_is_reachable():
+    """Measured: a network resetting TLS to Riseup and Tor still carried WARP.
+
+    Blocklisting a VPN provider's gateways is cheap. Blocklisting
+    Cloudflare's anycast ranges breaks too much ordinary traffic for most
+    networks to attempt, so WARP is worth trying even here.
+    """
+    report = _report(
+        Check("tls:ordinary:github.com:443", True, ""),
+        Check("tls:cloudflare:api.cloudflareclient.com", True, ""),
+        Check("udp:stun:3478", True, ""),
+        Check("tls:tunnel:Riseup's VPN API", False, "reset"),
+        Check("tls:tunnel:the Tor Project", False, "reset"),
+    )
+    assert report.filters_tunnels
+    assert report.cloudflare_reachable
+    recommendation = report.recommendation()
+    assert "warp-wireguard" in recommendation
+    # The WARP advice comes first, because it is the one that needs no server.
+    assert recommendation.index("warp-wireguard") < recommendation.index("wstunnel")
+
+
+def test_without_cloudflare_only_the_transport_is_suggested():
+    report = _report(
+        Check("tls:ordinary:github.com:443", True, ""),
+        Check("tls:cloudflare:api.cloudflareclient.com", False, "reset"),
+        Check("tls:tunnel:Riseup's VPN API", False, "reset"),
+    )
+    assert report.filters_tunnels
+    assert not report.cloudflare_reachable
+    assert "warp-wireguard" not in report.recommendation()
+    assert "wstunnel" in report.recommendation()
