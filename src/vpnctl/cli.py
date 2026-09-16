@@ -23,7 +23,7 @@ from rich.table import Table
 
 from vpnctl.bootstrap import bootstrap_wireguard_vps
 from vpnctl.tailscale_bootstrap import bootstrap_tailscale_exit_node
-from vpnctl import menu
+from vpnctl import menu, menu_model
 from vpnctl.config import config_path, configure_transport, load_config
 from vpnctl.docker_smoke import (
     SANDBOXABLE,
@@ -866,23 +866,42 @@ def _print_results_table(results) -> None:
 
 # --- interactive menu -------------------------------------------------------
 
-_MENU: list[tuple[str, str, str]] = [
-    ("Check dependencies", "doctor", "Every provider's prerequisites, with hints for what is missing"),
-    ("Benchmark providers", "benchmark", "Connect each in turn, measure it, and rank them"),
-    ("Connect the best provider", "connect", "Uses the last benchmark; runs one first if there is none"),
-    ("Live monitor", "tui", "RTT, jitter, loss and throughput as they change"),
-    ("Show status", "status", "Current tunnel and the last benchmark result"),
-    ("Split tunnel", "split-tunnel-list", "The CIDRs that bypass the tunnel"),
-    ("Disconnect", "disconnect", "Tear down any active tunnel"),
-    ("Diagnose this network", "diagnose",
-     "What this network will and will not carry, before connecting anything"),
-    ("Test a tunnel in a sandbox", "docker-smoke-test",
-     "Brings a tunnel up inside Docker to prove it works, leaving this machine alone"),
-    ("Test the bypass transport", "transport-test",
-     "Blocks the tunnel's own port in a container, then gets through anyway"),
-    ("Run setup again", "setup", "Choose between a free VPN and your own server"),
-    ("Exit", "exit", ""),
-]
+
+
+def resolve_action(ctx: click.Context, path: str) -> Optional[click.Command]:
+    """Find a command from a space-separated path like "split-tunnel list".
+
+    This replaces two special cases. A nested subcommand cannot be looked up
+    on `main` by name, so `split-tunnel list` and `transport test` each had a
+    hand-written branch in the dispatch, and every further nested action
+    would have needed another one. Walking the path handles all of them.
+    """
+    node: Optional[click.Command] = main
+    for part in path.split():
+        if not isinstance(node, click.Group):
+            return None
+        node = node.get_command(ctx, part)
+        if node is None:
+            return None
+    return node
+
+
+def _dispatch(ctx: click.Context, entry: menu.MenuEntry) -> None:
+    """Run one menu entry's command, asking for any value it needs first."""
+    command = resolve_action(ctx, entry.action or "")
+    if command is None:
+        err_console.print(f"[red]No such command: {entry.action}[/red]")
+        return
+
+    kwargs = dict(entry.kwargs)
+    if entry.prompt is not None:
+        param, question = entry.prompt
+        # ctx.invoke fills in defaults but does not enforce required=True, so
+        # a required argument left unasked arrives as None and fails deep
+        # inside the command rather than here.
+        kwargs[param] = click.prompt(f"  {question}", type=str).strip()
+
+    ctx.invoke(command, **kwargs)
 
 
 def run_menu(ctx: click.Context) -> int:
@@ -890,6 +909,9 @@ def run_menu(ctx: click.Context) -> int:
 
     Every entry invokes the same command a user could have typed, so there is
     one implementation of each action rather than a menu copy that drifts.
+
+    The navigation stack lives here because dispatch does. menu.select draws
+    one level and reports whether the user chose something, went up, or quit.
     """
     try:
         # A fresh clone has no config, so the menu would open onto a tool with
@@ -902,42 +924,63 @@ def run_menu(ctx: click.Context) -> int:
             with menu.raw_mode():
                 menu.read_key()
 
+        facts = menu_model.snapshot()
+        # One entry per level we have descended into, so leaving a submenu
+        # returns to where the cursor was rather than to the top.
+        stack: list[list[menu.MenuEntry]] = [menu_model.build(facts)]
+        crumbs: list[str] = []
+
         while True:
+            level = stack[-1]
+            title = " / ".join(["vpnctl", *crumbs])
             with menu.raw_mode():
                 choice = menu.select(
                     console,
-                    "vpnctl",
-                    [(label, hint) for label, _, hint in _MENU],
-                    subtitle="zero-cost VPN selector",
+                    title,
+                    level,
+                    status=facts.status_line,
+                    allow_back=len(stack) > 1,
                 )
-            if choice is None:
-                return 0
 
-            _, action, _ = _MENU[choice]
-            if action == "exit":
+            if choice is None:
+                console.clear()
+                return 0
+            if choice == menu.BACK:
+                stack.pop()
+                crumbs.pop()
+                continue
+
+            entry = level[choice]
+            if entry.is_submenu:
+                stack.append(entry.children)
+                crumbs.append(entry.label)
+                continue
+            if entry.action == "exit":
                 console.clear()
                 return 0
 
             console.clear()
             try:
-                # Nested subcommands, so they cannot be looked up on main
-                # by name.
-                if action == "split-tunnel-list":
-                    ctx.invoke(split_tunnel_list)
-                elif action == "transport-test":
-                    ctx.invoke(transport_test)
-                else:
-                    ctx.invoke(main.get_command(ctx, action))
+                _dispatch(ctx, entry)
             except SystemExit as exc:
                 # A subcommand calling sys.exit must not take the menu with it.
                 if exc.code not in (0, None):
-                    err_console.print(f"[yellow]{action} exited with {exc.code}[/yellow]")
+                    err_console.print(
+                        f"[yellow]{entry.action} exited with {exc.code}[/yellow]"
+                    )
             except KeyboardInterrupt:
                 console.print("\n[dim]interrupted[/dim]")
+            except click.Abort:
+                console.print("\n[dim]cancelled[/dim]")
 
             console.print("\n[dim]press any key to return to the menu[/dim]")
             with menu.raw_mode():
                 menu.read_key()
+
+            # Free to refresh here, since an action just ran and may well have
+            # changed what the header says.
+            facts = menu_model.snapshot()
+            stack[0] = menu_model.build(facts)
 
     except menu.NotATerminal:
         err_console.print(
