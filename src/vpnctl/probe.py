@@ -22,7 +22,7 @@ import subprocess
 import time
 from typing import Optional
 
-from vpnctl.providers.base import ProbeResult
+from vpnctl.providers.base import ProbeResult, ProgressFn
 
 # --- Probe targets ----------------------------------------------------------
 
@@ -46,46 +46,52 @@ W_TPUT = 0.10
 LOSS_PENALTY = 5.0
 
 
-def _ping_target(host: str, count: int = _PING_COUNT) -> Optional[list[float]]:
-    """Return list of RTT samples in ms, or None on complete failure."""
-    try:
-        result = subprocess.run(
-            ["ping", "-c", str(count), "-q", host],
-            capture_output=True,
-            text=True,
-            timeout=count * 2 + 5,
-            check=False,
-        )
-        if result.returncode != 0 and "Statistics" not in result.stdout:
-            return None
-        rtts: list[float] = []
-        for line in result.stdout.splitlines():
-            if "round-trip" in line or "rtt" in line:
-                parts = line.split("=")[-1].strip().split("/")
-                if len(parts) >= 2:
-                    try:
-                        rtts.append(float(parts[0].strip()))
-                        rtts.append(float(parts[1].strip()))
-                    except ValueError:
-                        pass
-        if rtts:
-            return rtts
-        rtts = []
-        for line in result.stdout.splitlines():
-            stripped = line.strip()
-            if "time=" in stripped:
+def _parse_rtts(stdout: str) -> list[float]:
+    """Pull RTT samples in ms out of ping's output."""
+    rtts: list[float] = []
+    for line in stdout.splitlines():
+        if "round-trip" in line or "rtt" in line:
+            parts = line.split("=")[-1].strip().split("/")
+            if len(parts) >= 2:
                 try:
-                    t = stripped.split("time=")[1].split()[0]
-                    rtts.append(float(t))
-                except (IndexError, ValueError):
+                    rtts.append(float(parts[0].strip()))
+                    rtts.append(float(parts[1].strip()))
+                except ValueError:
                     pass
-        return rtts or None
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return None
+    if rtts:
+        return rtts
+    # No summary line: fall back to the per-reply times.
+    for line in stdout.splitlines():
+        stripped = line.strip()
+        if "time=" in stripped:
+            try:
+                rtts.append(float(stripped.split("time=")[1].split()[0]))
+            except (IndexError, ValueError):
+                pass
+    return rtts
 
 
-def _parse_loss(host: str, count: int = _PING_COUNT) -> float:
-    """Return packet loss % from a ping run (0-100)."""
+def _parse_loss(stdout: str) -> Optional[float]:
+    """Pull packet loss percent out of ping's output, or None if absent."""
+    for line in stdout.splitlines():
+        if "packet loss" in line:
+            for tok in line.split():
+                if "%" in tok:
+                    try:
+                        return float(tok.replace("%", ""))
+                    except ValueError:
+                        return None
+    return None
+
+
+def _ping_host(host: str, count: int = _PING_COUNT) -> tuple[list[float], float]:
+    """Ping a host once and return (rtt samples, loss percent).
+
+    Both numbers come from the same run. They used to be gathered by two
+    functions that each shelled out their own `ping -c 10`, so three targets
+    cost six ping runs: about a minute during which the command printed
+    nothing and looked hung. One run per host halves that.
+    """
     try:
         result = subprocess.run(
             ["ping", "-c", str(count), "-q", host],
@@ -94,14 +100,14 @@ def _parse_loss(host: str, count: int = _PING_COUNT) -> float:
             timeout=count * 2 + 5,
             check=False,
         )
-        for line in result.stdout.splitlines():
-            if "packet loss" in line:
-                for tok in line.split():
-                    if "%" in tok:
-                        return float(tok.replace("%", ""))
     except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
-    return 100.0
+        return [], 100.0
+
+    rtts = _parse_rtts(result.stdout)
+    loss = _parse_loss(result.stdout)
+    if loss is None:
+        loss = 100.0 if not rtts else 0.0
+    return rtts, loss
 
 
 def _measure_download() -> float:
@@ -138,19 +144,30 @@ def _compute_score(
     return max(raw, 0.0)
 
 
-def run_probe(provider_id: str) -> ProbeResult:
+def run_probe(provider_id: str, on_progress: Optional[ProgressFn] = None) -> ProbeResult:
     """Run a full quality probe and return a ProbeResult.
 
     Never raises - errors are captured in ProbeResult.error.
+
+    on_progress is called with a short phase description before each step. A
+    probe takes tens of seconds, so a caller with no way to say which step is
+    in flight can only print one line and hope the user waits.
     """
+
+    def _say(msg: str) -> None:
+        if on_progress:
+            on_progress(msg)
+
     all_rtts: list[float] = []
     loss_samples: list[float] = []
 
-    for host in _PING_TARGETS:
-        samples = _ping_target(host)
+    total = len(_PING_TARGETS)
+    for index, host in enumerate(_PING_TARGETS, start=1):
+        _say(f"pinging {host} ({index}/{total})")
+        samples, loss = _ping_host(host)
         if samples:
             all_rtts.extend(samples)
-        loss_samples.append(_parse_loss(host))
+        loss_samples.append(loss)
 
     if not all_rtts:
         return ProbeResult(
@@ -166,6 +183,7 @@ def run_probe(provider_id: str) -> ProbeResult:
     median_rtt = statistics.median(all_rtts)
     jitter = statistics.stdev(all_rtts) if len(all_rtts) > 1 else 0.0
     loss_pct = statistics.mean(loss_samples)
+    _say("measuring download throughput")
     tput = _measure_download()
 
     score = _compute_score(median_rtt, jitter, loss_pct, tput)

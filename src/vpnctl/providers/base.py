@@ -8,9 +8,13 @@ defined here.
 from __future__ import annotations
 
 import abc
+
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Callable, Optional
+
+# Called with a short phase description during a long-running probe.
+ProgressFn = Callable[[str], None]
 
 
 class ProviderStatus(str, Enum):
@@ -85,7 +89,7 @@ class ProviderAdapter(abc.ABC):
         """Return the current tunnel state without making any changes."""
 
     @abc.abstractmethod
-    def probe(self) -> ProbeResult:
+    def probe(self, on_progress: Optional[ProgressFn] = None) -> ProbeResult:
         """Measure tunnel quality while connected.
 
         Implementations should:
@@ -95,6 +99,10 @@ class ProviderAdapter(abc.ABC):
         - Run a short HTTP(S) download throughput test.
         - Return a ProbeResult; set error and return a degraded result on failure
           rather than raising.
+
+        on_progress, when given, is called with a short phase description
+        before each step, so a caller can show which step is in flight during
+        a probe that takes tens of seconds.
         """
 
     def doctor(self) -> DoctorResult:

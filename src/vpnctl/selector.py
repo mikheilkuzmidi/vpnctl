@@ -97,7 +97,7 @@ def run_benchmark(
             continue
 
         _log(f"[{pid}] probing…")
-        result = adapter.probe()
+        result = adapter.probe(lambda phase: _log(f"[{pid}] {phase}"))
         results.append(result)
         _log(f"[{pid}] {result}")
 

@@ -21,6 +21,7 @@ from typing import Optional
 
 from vpnctl.providers.base import (
     DoctorResult,
+    ProgressFn,
     ProbeResult,
     ProviderAdapter,
     ProviderStatus,
@@ -280,8 +281,8 @@ class WgCustomAdapter(ProviderAdapter):
             return ProviderStatus.CONNECTED
         return ProviderStatus.DISCONNECTED
 
-    def probe(self) -> ProbeResult:
-        return run_probe(_PROVIDER_ID)
+    def probe(self, on_progress: Optional[ProgressFn] = None) -> ProbeResult:
+        return run_probe(_PROVIDER_ID, on_progress)
 
     def doctor(self) -> DoctorResult:
         issues: list[str] = []

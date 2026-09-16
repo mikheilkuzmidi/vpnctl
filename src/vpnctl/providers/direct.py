@@ -12,8 +12,10 @@ provider runs, against the path traffic already takes.
 
 from __future__ import annotations
 
-from vpnctl.probe import ProbeResult, run_probe
-from vpnctl.providers.base import DoctorResult, ProviderAdapter, ProviderStatus
+from typing import Optional
+
+from vpnctl.probe import run_probe
+from vpnctl.providers.base import ProgressFn, DoctorResult, ProviderAdapter, ProviderStatus
 
 PROVIDER_ID = "direct"
 
@@ -39,8 +41,8 @@ class DirectAdapter(ProviderAdapter):
         # Calling it disconnected would make `status` read as a fault.
         return ProviderStatus.CONNECTED
 
-    def probe(self) -> ProbeResult:
-        return run_probe(self.provider_id)
+    def probe(self, on_progress: Optional[ProgressFn] = None) -> ProbeResult:
+        return run_probe(self.provider_id, on_progress)
 
     def doctor(self) -> DoctorResult:
         # No binaries, no config, no privileges. There is nothing to check.

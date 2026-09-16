@@ -7,12 +7,15 @@ benchmark candidates.
 
 from __future__ import annotations
 
+from typing import Optional
+
 import shutil
 import subprocess
 import time
 
 from vpnctl.providers.base import (
     DoctorResult,
+    ProgressFn,
     ProbeResult,
     ProviderAdapter,
     ProviderStatus,
@@ -90,8 +93,8 @@ class WarpWireguardAdapter(ProviderAdapter):
             return ProviderStatus.DISCONNECTED
         return ProviderStatus.UNKNOWN
 
-    def probe(self) -> ProbeResult:
-        return run_probe(_PROVIDER_ID)
+    def probe(self, on_progress: Optional[ProgressFn] = None) -> ProbeResult:
+        return run_probe(_PROVIDER_ID, on_progress)
 
     def doctor(self) -> DoctorResult:
         issues: list[str] = []
