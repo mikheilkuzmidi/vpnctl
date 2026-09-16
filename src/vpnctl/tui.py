@@ -220,13 +220,19 @@ def _probe_loop(state: ProbeState, stop: threading.Event, providers=()) -> None:
                 state.dl_history.append(dl)
             if statuses:
                 state.provider_status = statuses
+            # Throughput is measured every _SLOW_INTERVAL, not on every
+            # probe, so most rows had nothing in that column. The last known
+            # value is carried onto each event with a flag saying whether it
+            # was measured on this pass, so the log can show a figure on
+            # every line without claiming it was taken each time.
             state.events.append(
                 (
                     time.time(),
                     rtt,
                     jit,
                     loss,
-                    dl,
+                    dl if dl is not None else state.dl_mbps,
+                    dl is not None,
                 )
             )
 
@@ -397,21 +403,29 @@ def _log_lines(state: ProbeState, rows: int, width: int) -> Text:
         events = list(state.events)[-rows:]
 
     lines: list[Text] = []
-    for when, rtt, jit, loss, dl in events:
+    for event in events:
+        # Older events predate the carried-forward flag.
+        when, rtt, jit, loss, dl = event[:5]
+        fresh = event[5] if len(event) > 5 else dl is not None
+
         line = Text("  ")
         line.append(datetime.fromtimestamp(when).strftime("%H:%M:%S") + "  ", style="muted")
         line.append("rtt ", style="label")
-        line.append(f"{rtt:.1f}" if rtt is not None else "-")
+        line.append(f"{rtt:>5.1f}" if rtt is not None else "    -")
         line.append("   jitter ", style="label")
-        line.append(f"{jit:.1f}" if jit is not None else "-")
+        line.append(f"{jit:>5.1f}" if jit is not None else "    -")
         line.append("   loss ", style="label")
-        line.append(f"{loss:.1f}%" if loss is not None else "-")
-        suffix = f"   download {dl:.2f} Mbps" if dl is not None else ""
+        line.append(f"{loss:>4.1f}%" if loss is not None else "    -")
+
+        suffix = f"   download {dl:>6.2f} Mbps" if dl is not None else ""
         # Every entry has to fit on one row, or the pane grows past the space
         # it was given and pushes the footer off the bottom.
         if suffix and len(line.plain) + len(suffix) <= width - 4:
             line.append("   download ", style="label")
-            line.append(f"{dl:.2f} Mbps")
+            # Dim when it is the last known figure rather than one taken on
+            # this pass, so a repeated number does not read as a fresh
+            # measurement.
+            line.append(f"{dl:>6.2f} Mbps", style=None if fresh else "muted")
         if len(line.plain) > width - 4:
             line = Text(line.plain[: width - 4])
         lines.append(line)
@@ -526,6 +540,7 @@ def _build_layout(state: ProbeState, providers, cfg, console: Console) -> Group:
     footer.append(" quit", style="muted")
     footer.append(f"    probing every {_FAST_INTERVAL}s", style="muted")
     footer.append(f", speed every {_SLOW_INTERVAL}s", style="muted")
+    footer.append("    dimmed speed = last measured", style="muted")
 
     def rows_of(renderable) -> int:
         return len(

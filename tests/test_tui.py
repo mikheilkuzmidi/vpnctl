@@ -227,3 +227,60 @@ def test_the_footer_is_never_cropped_away(width, height):
     lines = _render(width, height)
     assert len(lines) <= height
     assert any("ctrl-c" in line for line in lines)
+
+
+def test_every_probe_row_shows_a_throughput_figure():
+    """Throughput is measured every 30s, not on every 5s probe.
+
+    So most rows had an empty download column. The last known figure is
+    carried onto each event instead, flagged so a repeated number can be
+    dimmed rather than presented as a fresh measurement.
+    """
+    import time as _t
+
+    from vpnctl.tui import _log_lines
+
+    state = ProbeState()
+    now = _t.time()
+    state.events.append((now - 15, 20.0, 2.0, 0.0, 40.0, True))
+    state.events.append((now - 10, 21.0, 2.1, 0.0, 40.0, False))
+    state.events.append((now - 5, 22.0, 2.2, 0.0, 40.0, False))
+
+    rendered = _log_lines(state, 5, 100)
+    rows = rendered.plain.rstrip("\n").split("\n")
+    assert len(rows) == 3
+    for row in rows:
+        assert "download" in row, row
+        assert "40.00 Mbps" in row, row
+
+    # The fresh one is undimmed and the carried ones are dimmed, so a
+    # repeated figure does not look like it was just taken.
+    styles = [
+        span.style
+        for span in rendered.spans
+        if isinstance(span.style, str) and span.style == "muted"
+    ]
+    assert styles, "carried figures should be dimmed"
+
+
+def test_a_row_from_before_the_flag_existed_still_renders():
+    """The deque can hold events recorded by an older build."""
+    import time as _t
+
+    from vpnctl.tui import _log_lines
+
+    state = ProbeState()
+    state.events.append((_t.time(), 20.0, 2.0, 0.0, 40.0))
+    assert "40.00 Mbps" in _log_lines(state, 2, 100).plain
+
+
+def test_a_probe_before_any_throughput_reading_shows_no_figure():
+    import time as _t
+
+    from vpnctl.tui import _log_lines
+
+    state = ProbeState()
+    state.events.append((_t.time(), 20.0, 2.0, 0.0, None, False))
+    row = _log_lines(state, 2, 100).plain
+    assert "rtt" in row
+    assert "download" not in row
