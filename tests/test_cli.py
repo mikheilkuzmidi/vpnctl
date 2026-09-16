@@ -655,9 +655,13 @@ def test_disconnect_does_not_claim_to_have_disconnected_the_control(tmp_path, mo
     warp.disconnect.assert_called_once()
     direct.disconnect.assert_not_called()
     assert "direct disconnected" not in result.output
-    assert "warp-wireguard disconnected" in result.output
-    # And it says what you are back on, which is the useful part.
+    # The action worked, so it says so plainly rather than being coloured as
+    # a warning for where it left you.
+    assert "warp-wireguard disconnected successfully" in result.output
+    assert "✓" in result.output
+    # And it still says what you are back on, on its own line.
     assert "plain connection" in result.output
+    assert "not\nprotected" in result.output or "not protected" in result.output
 
 
 def test_connect_does_not_claim_to_disconnect_the_control_first(tmp_path, monkeypatch):

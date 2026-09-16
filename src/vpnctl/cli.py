@@ -459,11 +459,17 @@ def disconnect() -> None:
         )
 
     if torn_down:
+        # The action succeeded, so it reads as a success. Colouring the whole
+        # thing as a warning made a teardown that worked perfectly look like
+        # something had gone wrong; where you have ended up is a separate
+        # fact, and it goes on its own line.
         render.verdict(
             console,
-            f"{', '.join(torn_down)} disconnected. Back on the plain "
-            "connection, which is not protected.",
-            ok=False,
+            f"✓ {', '.join(torn_down)} disconnected successfully.",
+        )
+        console.print(
+            "[muted]  Back on the plain connection, which is not "
+            "protected.[/muted]"
         )
     else:
         console.print("[muted]No tunnel is up.[/muted]")
