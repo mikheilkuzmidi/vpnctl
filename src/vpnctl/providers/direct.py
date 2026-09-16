@@ -23,6 +23,9 @@ PROVIDER_ID = "direct"
 class DirectAdapter(ProviderAdapter):
     """Measures the connection as it stands, with no tunnel in the path."""
 
+    # Never a connection target: see ProviderAdapter.is_control.
+    is_control = True
+
     @property
     def provider_id(self) -> str:
         return PROVIDER_ID

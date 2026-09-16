@@ -28,6 +28,7 @@ from vpnctl.config import Config
 from vpnctl.providers.base import ProbeResult, ProviderAdapter, ProviderStatus
 from vpnctl.selector import (
     build_providers,
+    control_provider_ids,
     pick_winner,
     run_benchmark,
     save_results,
@@ -112,7 +113,7 @@ def run_watch(
             last_bench = time.monotonic()
             last_probe = last_bench
 
-            winner = pick_winner(results)
+            winner = pick_winner(results, controls=control_provider_ids(providers))
             if winner is None:
                 _log("All providers failed - staying put.")
                 time.sleep(30)

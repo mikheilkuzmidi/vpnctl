@@ -80,6 +80,7 @@ def test_connect_uses_cached_winner(tmp_path, monkeypatch):
     fake_results = [_make_result("warp-masque", 30.0, 65.0)]
     mock_adapter = MagicMock()
     mock_adapter.provider_id = "warp-masque"
+    mock_adapter.is_control = False
     mock_adapter.connect.return_value = None
 
     with patch("vpnctl.cli.load_results", return_value=fake_results):
@@ -97,6 +98,7 @@ def test_connect_rolls_back_on_failure(tmp_path, monkeypatch):
     fake_results = [_make_result("warp-masque", 30.0, 65.0)]
     mock_adapter = MagicMock()
     mock_adapter.provider_id = "warp-masque"
+    mock_adapter.is_control = False
     mock_adapter.connect.side_effect = RuntimeError("timeout")
 
     with patch("vpnctl.cli.load_results", return_value=fake_results):
@@ -113,6 +115,7 @@ def test_disconnect_no_active_tunnels(tmp_path, monkeypatch):
 
     mock_adapter = MagicMock()
     mock_adapter.provider_id = "warp-masque"
+    mock_adapter.is_control = False
     mock_adapter.status.return_value = ProviderStatus.DISCONNECTED
 
     with patch("vpnctl.cli.build_providers", return_value=[mock_adapter]):
@@ -129,6 +132,7 @@ def test_disconnect_active_tunnel(tmp_path, monkeypatch):
 
     mock_adapter = MagicMock()
     mock_adapter.provider_id = "warp-masque"
+    mock_adapter.is_control = False
     mock_adapter.status.return_value = ProviderStatus.CONNECTED
 
     with patch("vpnctl.cli.build_providers", return_value=[mock_adapter]):
@@ -154,8 +158,10 @@ def test_connect_named_provider(tmp_path, monkeypatch):
 
     mock_warp = MagicMock()
     mock_warp.provider_id = "warp-masque"
+    mock_warp.is_control = False
     mock_wg = MagicMock()
     mock_wg.provider_id = "warp-wireguard"
+    mock_wg.is_control = False
     mock_wg.connect.return_value = None
 
     with patch("vpnctl.cli.build_providers", return_value=[mock_warp, mock_wg]):
@@ -172,10 +178,12 @@ def test_connect_disconnects_other_active_provider(tmp_path, monkeypatch):
 
     active = MagicMock()
     active.provider_id = "warp-masque"
+    active.is_control = False
     active.status.return_value = ProviderStatus.CONNECTED
 
     target = MagicMock()
     target.provider_id = "warp-wireguard"
+    target.is_control = False
     target.status.return_value = ProviderStatus.DISCONNECTED
     target.connect.return_value = None
 
@@ -366,3 +374,61 @@ def test_connect_succeeds_once_the_peer_answers(monkeypatch):
          patch.object(adapter, "_resolve_real_interface", return_value="utun7"), \
          patch.object(adapter, "_latest_handshake", return_value=2):
         adapter.connect()  # must not raise
+
+
+def test_connect_never_picks_the_unprotected_control(tmp_path, monkeypatch):
+    """The worst possible bug in a VPN client.
+
+    "direct" measures the connection with no tunnel in it, so it is usually
+    the fastest row in a benchmark: no encryption and no extra hop to pay
+    for. Ranking by score alone therefore hands the win to the one option
+    that provides no protection, and connect would report success while
+    leaving the machine exactly as exposed as before.
+    """
+    _minimal_config(tmp_path, monkeypatch)
+
+    # direct scores highest, as it usually will.
+    results = [
+        _make_result("direct", 12.0, 98.0),
+        _make_result("warp-wireguard", 40.0, 61.0),
+    ]
+
+    direct = MagicMock()
+    direct.provider_id = "direct"
+    direct.is_control = True
+    warp = MagicMock()
+    warp.provider_id = "warp-wireguard"
+    warp.is_control = False
+
+    with patch("vpnctl.cli.load_results", return_value=results), \
+         patch("vpnctl.cli.build_providers", return_value=[direct, warp]):
+        result = CliRunner().invoke(main, ["connect"])
+
+    assert result.exit_code == 0, result.output
+    warp.connect.assert_called_once()
+    direct.connect.assert_not_called()
+    assert "warp-wireguard" in result.output
+
+
+def test_pick_winner_excludes_controls_without_being_told():
+    """A caller holding only saved results still has to be safe."""
+    from vpnctl.selector import pick_winner
+
+    results = [
+        _make_result("direct", 12.0, 98.0),
+        _make_result("warp-wireguard", 40.0, 61.0),
+    ]
+    winner = pick_winner(results)
+    assert winner is not None
+    assert winner.provider_id == "warp-wireguard"
+
+
+def test_pick_winner_returns_nothing_when_only_a_control_succeeded():
+    """Better to say there is no tunnel than to offer the absence of one."""
+    from vpnctl.selector import pick_winner
+
+    results = [
+        _make_result("direct", 12.0, 98.0),
+        _make_result("warp-wireguard", 0.0, 0.0, error="no handshake"),
+    ]
+    assert pick_winner(results) is None

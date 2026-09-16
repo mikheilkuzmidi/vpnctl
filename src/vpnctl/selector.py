@@ -15,7 +15,7 @@ from typing import Optional
 from vpnctl.config import Config, results_path
 from vpnctl.transports import WstunnelSettings, build_transport
 from vpnctl.providers.base import ProbeResult, ProviderAdapter
-from vpnctl.providers.direct import DirectAdapter
+from vpnctl.providers.direct import PROVIDER_ID as DIRECT_PROVIDER_ID, DirectAdapter
 from vpnctl.providers.riseup import RiseupAdapter
 from vpnctl.providers.warp_masque import WarpMasqueAdapter
 from vpnctl.providers.warp_wireguard import WarpWireguardAdapter
@@ -138,10 +138,35 @@ def run_benchmark(
     return results
 
 
-def pick_winner(results: list[ProbeResult]) -> Optional[ProbeResult]:
-    """Return the highest-scoring successful result, or None."""
+def control_provider_ids(providers: Optional[list[ProviderAdapter]] = None) -> set[str]:
+    """The provider ids that measure rather than protect.
+
+    Taken from the adapters when they are to hand, and from a default
+    otherwise, so a caller that only has saved results still excludes them.
+    """
+    if providers is not None:
+        return {p.provider_id for p in providers if p.is_control}
+    return {DIRECT_PROVIDER_ID}
+
+
+def pick_winner(
+    results: list[ProbeResult],
+    *,
+    controls: Optional[set[str]] = None,
+) -> Optional[ProbeResult]:
+    """Return the highest-scoring successful tunnel, or None.
+
+    Control rows are excluded. "direct" is the unprotected connection and is
+    usually the fastest row in the table, having no encryption or extra hop
+    to pay for, so ranking by score alone hands the win to the one option
+    that provides no protection: connect would then report success while
+    leaving the machine exactly as exposed as before.
+    """
+    excluded = control_provider_ids() if controls is None else controls
     ranked = sorted(
-        (r for r in results if r.ok), key=lambda r: r.score, reverse=True
+        (r for r in results if r.ok and r.provider_id not in excluded),
+        key=lambda r: r.score,
+        reverse=True,
     )
     return ranked[0] if ranked else None
 

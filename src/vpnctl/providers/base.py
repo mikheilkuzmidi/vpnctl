@@ -64,6 +64,16 @@ class DoctorResult:
 class ProviderAdapter(abc.ABC):
     """Common contract for all VPN provider adapters."""
 
+    #: Whether this adapter actually carries traffic through a tunnel.
+    #:
+    #: The "direct" adapter exists to measure the unprotected connection as
+    #: the control every tunnel is ranked against, so it appears in a
+    #: benchmark alongside real providers. It must never be selected as the
+    #: thing to connect: it is usually the fastest row in the table, because
+    #: it has no encryption or extra hop to pay for, so the highest score
+    #: belongs to the one option that offers no protection at all.
+    is_control: bool = False
+
     @property
     @abc.abstractmethod
     def provider_id(self) -> str:

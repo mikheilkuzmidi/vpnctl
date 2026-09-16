@@ -35,6 +35,7 @@ from vpnctl.providers.base import ProviderStatus
 from vpnctl.selector import (
     build_providers,
     load_results,
+    control_provider_ids,
     pick_winner,
     run_benchmark,
     save_results,
@@ -155,7 +156,7 @@ def benchmark() -> None:
     console.print()
     _print_results_table(results)
 
-    winner = pick_winner(results)
+    winner = pick_winner(results, controls=control_provider_ids(providers))
     if winner:
         console.print(
             f"\n[bold green]Winner:[/bold green] {winner.provider_id}  "
@@ -190,7 +191,7 @@ def connect(provider: Optional[str]) -> None:
             sys.exit(1)
     else:
         results = load_results()
-        winner = pick_winner(results)
+        winner = pick_winner(results, controls=control_provider_ids(providers))
         if winner is None:
             console.print(
                 "[yellow]No cached benchmark results.[/yellow] "
@@ -202,7 +203,9 @@ def connect(provider: Optional[str]) -> None:
 
             results = run_benchmark(providers, status_cb=_log)
             save_results(results)
-            winner = pick_winner(results)
+            winner = pick_winner(
+                results, controls=control_provider_ids(providers)
+            )
 
         if winner is None:
             err_console.print("All providers failed - cannot connect.")
