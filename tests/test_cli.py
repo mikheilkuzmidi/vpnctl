@@ -200,3 +200,67 @@ def test_docker_smoke_test_invokes_runner(tmp_path, monkeypatch):
     assert result.exit_code == 0
     mock_run.assert_called_once()
     assert "3.134.65.158" in result.output
+
+
+# ---------------------------------------------------------------------------
+# split-tunnel
+#
+# Every command in this group used to raise NameError: cli.py read and wrote
+# TOML without importing either library. Nothing caught it because nothing
+# invoked the group, so these cover the whole round trip.
+# ---------------------------------------------------------------------------
+
+
+def _split_tunnel_config(tmp_path: Path, monkeypatch, body: str) -> Path:
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(body)
+    monkeypatch.setattr("vpnctl.config._CONFIG_FILE", cfg)
+    return cfg
+
+
+def test_split_tunnel_list_reads_the_config(tmp_path, monkeypatch):
+    _split_tunnel_config(
+        tmp_path,
+        monkeypatch,
+        '[split_tunnel]\nenabled = true\nexcludes = ["10.0.0.0/8"]\n',
+    )
+    with patch("vpnctl.cli.list_warp_excludes", return_value=[]):
+        result = CliRunner().invoke(main, ["split-tunnel", "list"])
+    assert result.exit_code == 0, result.output
+    assert "enabled" in result.output
+    assert "10.0.0.0/8" in result.output
+
+
+def test_split_tunnel_list_without_a_config(tmp_path, monkeypatch):
+    monkeypatch.setattr("vpnctl.config._CONFIG_FILE", tmp_path / "absent.toml")
+    with patch("vpnctl.cli.list_warp_excludes", return_value=[]):
+        result = CliRunner().invoke(main, ["split-tunnel", "list"])
+    assert result.exit_code == 0, result.output
+    assert "No excludes configured" in result.output
+
+
+def test_split_tunnel_add_then_remove_round_trips(tmp_path, monkeypatch):
+    cfg = _split_tunnel_config(tmp_path, monkeypatch, "[policy]\n")
+
+    added = CliRunner().invoke(main, ["split-tunnel", "add", "172.16.0.0/12"])
+    assert added.exit_code == 0, added.output
+    assert "172.16.0.0/12" in cfg.read_text()
+
+    # Adding it twice must not duplicate the entry.
+    again = CliRunner().invoke(main, ["split-tunnel", "add", "172.16.0.0/12"])
+    assert again.exit_code == 0, again.output
+    assert cfg.read_text().count("172.16.0.0/12") == 1
+
+    removed = CliRunner().invoke(main, ["split-tunnel", "remove", "172.16.0.0/12"])
+    assert removed.exit_code == 0, removed.output
+    assert "172.16.0.0/12" not in cfg.read_text()
+
+
+def test_split_tunnel_enable_and_disable_persist(tmp_path, monkeypatch):
+    cfg = _split_tunnel_config(tmp_path, monkeypatch, "[policy]\n")
+
+    assert CliRunner().invoke(main, ["split-tunnel", "enable"]).exit_code == 0
+    assert "enabled = true" in cfg.read_text()
+
+    assert CliRunner().invoke(main, ["split-tunnel", "disable"]).exit_code == 0
+    assert "enabled = false" in cfg.read_text()

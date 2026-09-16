@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tomllib
 from typing import Optional
 
 import click
@@ -34,6 +35,7 @@ from vpnctl.selector import (
     save_results,
 )
 from vpnctl.split_tunnel import list_warp_excludes
+from vpnctl.toml_utils import dumps as toml_dumps
 from vpnctl.tui import run_tui
 from vpnctl.watch import run_watch
 
@@ -509,7 +511,7 @@ def _load_raw_config() -> dict:
 
 def _save_raw_config(raw: dict) -> None:
     config_path().parent.mkdir(parents=True, exist_ok=True)
-    config_path().write_bytes(tomli_w.dumps(raw).encode())
+    config_path().write_bytes(toml_dumps(raw).encode())
 
 
 @split_tunnel_group.command(name="list")
@@ -676,6 +678,7 @@ def run_menu(ctx: click.Context) -> int:
 
             console.clear()
             try:
+                # Nested subcommand, so it cannot be looked up on main by name.
                 if action == "split-tunnel-list":
                     ctx.invoke(split_tunnel_list)
                 else:

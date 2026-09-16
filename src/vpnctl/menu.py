@@ -95,7 +95,17 @@ def select(
             if hint:
                 body.append(f"      {hint}\n", style="dim")
         body.append("\n  up and down to move, enter to choose, q to quit", style="dim")
-        console.print(Panel(body, title=title, subtitle=subtitle or None, border_style="cyan"))
+        # expand=False so the box hugs the longest hint rather than stretching
+        # across a wide terminal, which left the entries marooned on the left.
+        console.print(
+            Panel(
+                body,
+                title=title,
+                subtitle=subtitle or None,
+                border_style="cyan",
+                expand=False,
+            )
+        )
 
         key = read_key()
         if key == UP:
