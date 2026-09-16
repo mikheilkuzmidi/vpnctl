@@ -54,11 +54,26 @@ _SPARKS = " ▁▂▃▄▅▆▇█"
 
 
 def _sparkline(values: list[float], width: int = _HISTORY) -> str:
+    """Render values as bars, scaled to their own range.
+
+    A sample never renders as a blank. Scaling min to the first character of
+    _SPARKS, which is a space, meant the lowest reading in the window was
+    invisible and a steady connection drew nothing at all: two readings of
+    15ms and 28ms showed one bar, and two identical readings showed none.
+    So the bars start at _SPARKS[1], and a range too narrow to plot reads as
+    a steady mid-height line rather than a flat line at the bottom. The
+    absolute numbers are on the row underneath either way.
+    """
     if not values:
         return " " * width
     lo, hi = min(values), max(values)
-    span = hi - lo or 1.0
-    chars = [_SPARKS[round((v - lo) / span * (len(_SPARKS) - 1))] for v in values]
+    levels = len(_SPARKS) - 1  # index 0 is the blank, reserved for no data
+    if hi - lo < max(hi, 1.0) * 0.02:
+        return (_SPARKS[levels // 2] * len(values))[-width:].ljust(width)
+    span = hi - lo
+    chars = [
+        _SPARKS[1 + round((v - lo) / span * (levels - 1))] for v in values
+    ]
     return "".join(chars[-width:]).ljust(width)
 
 
@@ -168,11 +183,29 @@ def _probe_loop(state: ProbeState, stop: threading.Event) -> None:
 
 def _fmt(value: Optional[float], unit: str, decimals: int = 1,
          warn: float = 9000.0) -> Text:
+    """Format a metric where a bigger number is worse: latency, jitter, loss."""
     if value is None:
         return Text("-", style="dim")
     s = f"{value:.{decimals}f} {unit}"
     style = "red bold" if value >= warn else ("yellow" if value >= warn * 0.5 else "green")
     return Text(s, style=style)
+
+
+def _fmt_throughput(value: Optional[float], floor: float) -> Text:
+    """Format a metric where a bigger number is better.
+
+    Download used to go through _fmt with warn=0.1, but warn means "red at or
+    above this", so every usable connection was reported in red bold and a
+    connection managing 0.05 Mbps was reported in green.
+    """
+    if value is None:
+        return Text("-", style="dim")
+    s = f"{value:.2f} Mbps"
+    if value < floor:
+        return Text(s, style="red bold")
+    if value < floor * 5:
+        return Text(s, style="yellow")
+    return Text(s, style="green")
 
 
 def _status_badge(s: ProviderStatus) -> Text:
@@ -243,7 +276,8 @@ def _build_layout(state: ProbeState, providers, cfg) -> Layout:
         metrics_table.add_row("RTT", _fmt(rtt, "ms", warn=200))
         metrics_table.add_row("Jitter", _fmt(jit, "ms", warn=50))
         metrics_table.add_row("Loss", _fmt(loss, "%", decimals=1, warn=5))
-        metrics_table.add_row("Download", _fmt(dl, "Mbps", decimals=2, warn=0.1))
+        # Below 1 Mbps a tunnel is not usable; under 5 is worth noticing.
+        metrics_table.add_row("Download", _fmt_throughput(dl, floor=1.0))
 
     metrics_table.add_row("", Text(""))
     metrics_table.add_row("Probes", Text(str(count), style="dim"))
