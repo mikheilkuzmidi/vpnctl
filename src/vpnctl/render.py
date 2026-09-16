@@ -18,7 +18,7 @@ print it plainly rather than growing this module.
 
 from __future__ import annotations
 
-from typing import Iterable, Optional, Sequence
+from typing import Iterable, Optional, Sequence, Union
 
 from rich.console import Console
 from rich.table import Table
@@ -54,15 +54,17 @@ def header(console: Console, title: str, status: Optional[str] = None) -> None:
 
 def rows(
     console: Console,
-    pairs: Sequence[tuple[str, str]],
+    pairs: Sequence[tuple[str, Union[str, Text]]],
     *,
     indent: int = 2,
 ) -> None:
     """A key/value block, aligned once from the longest key.
 
     Every caller of this was previously padding labels by hand, which meant
-    the alignment was a property of whoever typed the f-string. Values may
-    carry rich markup; keys may not, because their width has to be known.
+    the alignment was a property of whoever typed the f-string. A value may
+    be markup or an already-built Text, because some of them come from
+    helpers that return one; keys are plain, because their width has to be
+    known before anything is rendered.
     """
     if not pairs:
         return

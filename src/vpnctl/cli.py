@@ -23,7 +23,7 @@ from rich.table import Table
 
 from vpnctl.bootstrap import bootstrap_wireguard_vps
 from vpnctl.tailscale_bootstrap import bootstrap_tailscale_exit_node
-from vpnctl import menu, menu_model
+from vpnctl import menu, menu_model, render
 from vpnctl.config import config_path, configure_transport, load_config
 from vpnctl.docker_smoke import (
     SANDBOXABLE,
@@ -49,7 +49,10 @@ from vpnctl.tui import run_tui
 from vpnctl.watch import run_watch
 
 console = Console()
-err_console = Console(stderr=True, style="bold red")
+# No base style: rich applies one underneath markup, so with style="bold red"
+# every err_console.print("[yellow]...") came out red and a warning was
+# indistinguishable from a failure. Callers say which they mean.
+err_console = Console(stderr=True)
 
 
 def _status_badge(s: ProviderStatus) -> str:
@@ -143,7 +146,7 @@ def benchmark() -> None:
     providers = build_providers(cfg)
 
     if not providers:
-        err_console.print("No providers enabled.")
+        err_console.print("[red]No providers enabled.[/red]")
         sys.exit(1)
 
     console.print(
@@ -194,7 +197,7 @@ def connect(provider: Optional[str]) -> None:
     providers = build_providers(cfg)
 
     if not providers:
-        err_console.print("No providers enabled.")
+        err_console.print("[red]No providers enabled.[/red]")
         sys.exit(1)
 
     if provider:
@@ -226,7 +229,7 @@ def connect(provider: Optional[str]) -> None:
             )
 
         if winner is None:
-            err_console.print("All providers failed - cannot connect.")
+            err_console.print("[red]All providers failed, so there is nothing to connect.[/red]")
             sys.exit(1)
 
         target = next(
@@ -271,27 +274,41 @@ def status() -> None:
     cfg = load_config()
     providers = build_providers(cfg)
 
-    console.print("[bold]Provider status[/bold]")
     tunnelled = False
+    rows: list[tuple[str, str]] = []
     for adapter in providers:
-        s = adapter.status()
+        state = adapter.status()
+        badge = _status_badge(state)
         if adapter.is_control:
             # The control always reports connected, because the unprotected
             # path is always there. Saying so plainly matters: read as a
             # provider row it looks like "you are on a VPN", which is the one
             # thing it is not.
-            console.print(
-                f"  {adapter.provider_id}  {_status_badge(s)}  "
-                "[dim](the plain connection, measured as a control)[/dim]"
+            rows.append(
+                (
+                    adapter.provider_id,
+                    f"{badge}  [dim]the plain connection, measured as a "
+                    "control[/dim]",
+                )
             )
             continue
-        console.print(f"  {adapter.provider_id}  {_status_badge(s)}")
-        if s == ProviderStatus.CONNECTED:
+        rows.append((adapter.provider_id, badge))
+        if state == ProviderStatus.CONNECTED:
             tunnelled = True
 
+    render.header(
+        console,
+        "vpnctl status",
+        "protected" if tunnelled else "not protected",
+    )
+    render.rows(console, rows)
+
     if not tunnelled:
-        console.print("\n[yellow]No tunnel is up.[/yellow] This machine's "
-                      "traffic is not protected.")
+        render.verdict(
+            console,
+            "No tunnel is up, so this machine's traffic is not protected.",
+            ok=False,
+        )
 
     results = load_results()
     if results:
@@ -388,12 +405,14 @@ def transport_group() -> None:
 def transport_show() -> None:
     """Print the configured transport."""
     cfg = load_config()
-    console.print(f"[bold]transport[/bold]  {cfg.transport.kind}")
+    render.header(console, "vpnctl transport", cfg.transport.kind)
+    rows = [("kind", cfg.transport.kind)]
     if cfg.transport.kind != "direct":
-        console.print(f"  server      {cfg.transport.server or '[dim]not set[/dim]'}")
-        console.print(f"  local port  {cfg.transport.local_port}")
+        rows.append(("server", cfg.transport.server or "[dim]not set[/dim]"))
+        rows.append(("local port", str(cfg.transport.local_port)))
         if cfg.transport.sni:
-            console.print(f"  TLS name    {cfg.transport.sni}")
+            rows.append(("TLS name", cfg.transport.sni))
+    render.rows(console, rows)
 
 
 @transport_group.command(name="set")
@@ -461,10 +480,17 @@ def transport_test(rebuild: bool) -> None:
             err_console.print(f"[red]{exc}[/red]")
             sys.exit(1)
 
-    mark = lambda ok: "[green]yes[/green]" if ok else "[red]no[/red]"  # noqa: E731
-    console.print(f"  direct path blocked   {mark(result.direct_blocked)}")
-    console.print(f"  tunnel through 443    {mark(result.tunnelled)}")
-    console.print(f"  carried real traffic  {mark(result.carried_traffic)}")
+    def mark(ok: bool) -> str:
+        return "[green]yes[/green]" if ok else "[red]no[/red]"
+
+    render.rows(
+        console,
+        [
+            ("direct path blocked", mark(result.direct_blocked)),
+            ("tunnel through 443", mark(result.tunnelled)),
+            ("carried real traffic", mark(result.carried_traffic)),
+        ],
+    )
     if result.ok:
         console.print(
             "\n[green]✓[/green] The transport works: a tunnel that cannot "
@@ -515,18 +541,25 @@ def docker_smoke_test(provider: str, rebuild: bool) -> None:
             err_console.print(f"[red]No handshake.[/red] {exc}")
             sys.exit(1)
         except RuntimeError as exc:
-            err_console.print(str(exc))
+            err_console.print(f"[red]{exc}[/red]")
             sys.exit(1)
 
-    console.print(f"[green]✓[/green] {provider} works.")
-    console.print(f"  egress without the tunnel  [dim]{result.baseline_ip}[/dim]")
-    console.print(f"  egress through the tunnel  [bold]{result.public_ip}[/bold]")
+    rows = [
+        ("egress without the tunnel", f"[dim]{result.baseline_ip}[/dim]"),
+        ("egress through the tunnel", f"[bold]{result.public_ip}[/bold]"),
+    ]
     if result.warp:
-        console.print(f"  Cloudflare reports WARP    [bold]{result.warp}[/bold]")
-    console.print(
-        "  DNS inside the tunnel      "
-        + ("[green]resolves[/green]" if result.dns_ok else "[red]does not resolve[/red]")
+        rows.append(("Cloudflare reports WARP", f"[bold]{result.warp}[/bold]"))
+    rows.append(
+        (
+            "DNS inside the tunnel",
+            "[green]resolves[/green]"
+            if result.dns_ok
+            else "[red]does not resolve[/red]",
+        )
     )
+    render.rows(console, rows)
+    render.verdict(console, f"{provider} works.")
 
 
 @main.command("bootstrap-wireguard-vps")
@@ -603,7 +636,7 @@ def bootstrap_wireguard_vps_cmd(
         err_console.print(f"stderr: {stderr}")
         sys.exit(exc.returncode or 1)
     except RuntimeError as exc:
-        err_console.print(str(exc))
+        err_console.print(f"[red]{exc}[/red]")
         sys.exit(1)
 
     console.print("[green]✓[/green] VPS bootstrap complete.")
@@ -677,7 +710,7 @@ def bootstrap_tailscale_exit_node_cmd(
         err_console.print(f"stderr: {stderr}")
         sys.exit(exc.returncode or 1)
     except RuntimeError as exc:
-        err_console.print(str(exc))
+        err_console.print(f"[red]{exc}[/red]")
         sys.exit(1)
 
     console.print("[green]✓[/green] Tailscale installed and configured on VPS.")
@@ -984,7 +1017,7 @@ def run_menu(ctx: click.Context) -> int:
 
     except menu.NotATerminal:
         err_console.print(
-            "vpnctl's menu needs a terminal. Run a subcommand directly, "
-            "or see `vpnctl --help`."
+            "[red]vpnctl's menu needs a terminal.[/red] Run a subcommand "
+            "directly, or see `vpnctl --help`."
         )
         return 2
