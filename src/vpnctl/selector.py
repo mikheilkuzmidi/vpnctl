@@ -14,6 +14,7 @@ from typing import Optional
 
 from vpnctl.config import Config, results_path
 from vpnctl.providers.base import ProbeResult, ProviderAdapter
+from vpnctl.providers.direct import DirectAdapter
 from vpnctl.providers.warp_masque import WarpMasqueAdapter
 from vpnctl.providers.warp_wireguard import WarpWireguardAdapter
 from vpnctl.providers.wg_custom import WgCustomAdapter
@@ -41,6 +42,8 @@ def build_providers(cfg: Config) -> list[ProviderAdapter]:
                 excludes=excludes,
             )
         )
+    if cfg.direct.enabled:
+        providers.append(DirectAdapter())
     return providers
 
 

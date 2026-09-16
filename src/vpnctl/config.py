@@ -107,6 +107,7 @@ class Config:
     warp_masque: WarpProviderConfig = field(default_factory=WarpProviderConfig)
     warp_wireguard: WarpProviderConfig = field(default_factory=WarpProviderConfig)
     wg_custom: WgCustomConfig = field(default_factory=WgCustomConfig)
+    direct: WarpProviderConfig = field(default_factory=WarpProviderConfig)
     split_tunnel: SplitTunnelConfig = field(default_factory=SplitTunnelConfig)
 
 
@@ -170,6 +171,9 @@ def load_config() -> Config:
     warp_wireguard = WarpProviderConfig(enabled=bool(wg_raw.get("enabled", True)))
 
     custom_raw = providers_raw.get("wireguard-custom", {})
+    direct_raw = raw.get("providers", {}).get("direct", {})
+    direct = WarpProviderConfig(enabled=bool(direct_raw.get("enabled", True)))
+
     wg_custom = WgCustomConfig(
         enabled=bool(custom_raw.get("enabled", False)),
         endpoint=str(custom_raw.get("endpoint", "")),
@@ -190,6 +194,7 @@ def load_config() -> Config:
     return Config(
         policy=policy,
         warp_masque=warp_masque,
+        direct=direct,
         warp_wireguard=warp_wireguard,
         wg_custom=wg_custom,
         split_tunnel=split_tunnel,
