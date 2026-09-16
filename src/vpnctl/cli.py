@@ -62,7 +62,7 @@ def _fmt_metric(value, unit: str, decimals: int = 1) -> str:
 
 def _status_badge(s: ProviderStatus) -> str:
     mapping = {
-        ProviderStatus.CONNECTED: "[green]connected[/green]",
+        ProviderStatus.CONNECTED: "[ok]connected[/ok]",
         ProviderStatus.DISCONNECTED: "[muted]disconnected[/muted]",
         ProviderStatus.CONNECTING: "[warn]connecting…[/warn]",
         ProviderStatus.ERROR: "[bad]error[/bad]",
@@ -134,7 +134,7 @@ def doctor() -> None:
             )
 
     if all_ok:
-        console.print("\n[green]All checks passed.[/green]")
+        console.print("\n[ok]All checks passed.[/ok]")
         console.print(
             "[muted]If a connection still fails, `vpnctl diagnose` measures "
             "what this network is blocking.[/muted]"
@@ -492,7 +492,7 @@ def diagnose() -> None:
     for check in report.checks:
         table.add_row(
             check.name,
-            "[green]ok[/green]" if check.ok else "[bad]no[/bad]",
+            "[ok]ok[/ok]" if check.ok else "[bad]no[/bad]",
             check.detail,
         )
     console.print(table)
@@ -586,7 +586,7 @@ def transport_test(rebuild: bool) -> None:
             sys.exit(1)
 
     def mark(ok: bool) -> str:
-        return "[green]yes[/green]" if ok else "[bad]no[/bad]"
+        return "[ok]yes[/ok]" if ok else "[bad]no[/bad]"
 
     render.rows(
         console,
@@ -658,7 +658,7 @@ def docker_smoke_test(provider: str, rebuild: bool) -> None:
     rows.append(
         (
             "DNS inside the tunnel",
-            "[green]resolves[/green]"
+            "[ok]resolves[/ok]"
             if result.dns_ok
             else "[bad]does not resolve[/bad]",
         )
@@ -879,7 +879,7 @@ def split_tunnel_list() -> None:
     enabled = raw.get("split_tunnel", {}).get("enabled", False)
     excludes: list[str] = raw.get("split_tunnel", {}).get("excludes", [])
 
-    badge = "[green]enabled[/green]" if enabled else "[muted]disabled[/muted]"
+    badge = "[ok]enabled[/ok]" if enabled else "[muted]disabled[/muted]"
     console.print(f"Split tunnel: {badge}")
 
     if excludes:
@@ -1012,7 +1012,7 @@ def _print_results_table(results, controls: Optional[set] = None) -> None:
                 f"{r.jitter_ms:.1f}",
                 f"{r.loss_pct:.1f}",
                 f"{r.throughput_mbps:.2f}",
-                "[green]ok[/green]",
+                "[ok]ok[/ok]",
                 style="bold" if i == 1 else None,
             )
 

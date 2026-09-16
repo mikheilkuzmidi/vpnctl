@@ -35,12 +35,14 @@ def _install_wireguard_tools(console: Console) -> bool:
     """Offer to install wireguard-tools, which needs no admin password."""
     if not shutil.which("brew"):
         console.print(
-            "[yellow]wireguard-tools is missing and Homebrew is not installed."
-            "[/yellow]\n  See https://www.wireguard.com/install/ for your system."
+            "[warn]wireguard-tools is missing and Homebrew is not installed."
+            "[/warn]\n  See https://www.wireguard.com/install/ for your system."
         )
         return False
 
-    console.print("[dim]wireguard-tools is missing. Installing it with Homebrew.[/dim]")
+    console.print(
+        "[muted]wireguard-tools is missing. Installing it with Homebrew.[/muted]"
+    )
     result = subprocess.run(
         ["brew", "install", "wireguard-tools"],
         capture_output=True,
@@ -49,8 +51,8 @@ def _install_wireguard_tools(console: Console) -> bool:
     )
     if result.returncode != 0:
         console.print(
-            "[red]brew install wireguard-tools failed.[/red]\n"
-            f"[dim]{result.stderr.strip()[:400]}[/dim]"
+            "[bad]brew install wireguard-tools failed.[/bad]\n"
+            f"[muted]{result.stderr.strip()[:400]}[/muted]"
         )
         return False
     return not _missing_tools()
@@ -93,12 +95,15 @@ def _configure_own_server(console: Console) -> bool:
     """Collect the four things a WireGuard client needs and write them out."""
     console.print(
         "\n[bold]Your WireGuard server[/bold]\n"
-        "[dim]These come from the [Peer] section your server generated for "
-        "this device.[/dim]"
+        "[muted]These come from the [Peer] section your server generated for "
+        "this device.[/muted]"
     )
     endpoint = click.prompt("  Endpoint (host:port)", type=str).strip()
     if ":" not in endpoint:
-        console.print("[red]An endpoint needs a port, for example vpn.example.com:51820.[/red]")
+        console.print(
+            "[bad]An endpoint needs a port, for example "
+            "vpn.example.com:51820.[/bad]"
+        )
         return False
 
     public_key = click.prompt("  Server public key", type=str).strip()
@@ -123,7 +128,7 @@ def _configure_own_server(console: Console) -> bool:
         key_file=str(key_file),
         address=address,
     )
-    console.print(f"[green]✓[/green] Saved. Key written to {key_file} (0600).")
+    console.print(f"[ok]✓[/ok] Saved. Key written to {key_file} (0600).")
     return True
 
 
@@ -131,23 +136,23 @@ def _configure_warp(console: Console) -> bool:
     """Register a free anonymous device and enable it."""
     console.print(
         "\n[bold]Registering a free Cloudflare WARP device[/bold]\n"
-        "[dim]Cloudflare is told a freshly generated public key, a random id, "
+        "[muted]Cloudflare is told a freshly generated public key, a random id, "
         "and the word 'PC'. No name, no email, no payment. The private key "
-        "stays on this machine.[/dim]"
+        "stays on this machine.[/muted]"
     )
     try:
-        with console.status("[dim]registering…[/dim]", spinner="dots"):
+        with console.status("[muted]registering…[/muted]", spinner="dots"):
             device = warp.load_or_register()
     except warp.WarpError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[bad]{exc}[/bad]")
         return False
 
     set_provider_enabled("warp-wireguard", True)
     console.print(
-        f"[green]✓[/green] Registered. Tunnel address {device.address_v4}, "
+        f"[ok]✓[/ok] Registered. Tunnel address {device.address_v4}, "
         f"peer {device.endpoint()}."
     )
-    console.print(f"[dim]  Cached at {warp.device_path()} (0600).[/dim]")
+    console.print(f"[muted]  Cached at {warp.device_path()} (0600).[/muted]")
     return True
 
 
@@ -155,30 +160,30 @@ def _configure_riseup(console: Console) -> bool:
     """Fetch Riseup's gateway list and an anonymous client certificate."""
     console.print(
         "\n[bold]Fetching Riseup's configuration[/bold]\n"
-        "[dim]Riseup is a nonprofit. Its own API reports allow_anonymous and "
+        "[muted]Riseup is a nonprofit. Its own API reports allow_anonymous and "
         "allow_free, so there is nothing to sign up for: vpnctl asks for a "
-        "short-lived client certificate and caches it.[/dim]"
+        "short-lived client certificate and caches it.[/muted]"
     )
     if find_openvpn() is None:
         console.print(
-            "[yellow]Riseup speaks OpenVPN, which is not installed.[/yellow]\n"
+            "[warn]Riseup speaks OpenVPN, which is not installed.[/warn]\n"
             "  brew install openvpn"
         )
         return False
 
     try:
-        with console.status("[dim]fetching gateways…[/dim]", spinner="dots"):
+        with console.status("[muted]fetching gateways…[/muted]", spinner="dots"):
             bundle = riseup.load_or_fetch("riseup")
     except riseup.RiseupError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[bad]{exc}[/bad]")
         return False
 
     set_provider_enabled("riseup", True)
     console.print(
-        f"[green]✓[/green] {len(bundle.gateways)} gateways cached "
+        f"[ok]✓[/ok] {len(bundle.gateways)} gateways cached "
         f"({', '.join(bundle.locations())})."
     )
-    console.print(f"[dim]  Cached at {riseup.bundle_path('riseup')} (0600).[/dim]")
+    console.print(f"[muted]  Cached at {riseup.bundle_path('riseup')} (0600).[/muted]")
     return True
 
 
@@ -193,7 +198,7 @@ def run_setup(console: Console) -> int:
 
     if _missing_tools() and not _install_wireguard_tools(console):
         return 2
-    console.print("[green]✓[/green] wireguard-tools present.")
+    console.print("[ok]✓[/ok] wireguard-tools present.")
 
     try:
         choice = _ask_provider(console)
@@ -205,7 +210,7 @@ def run_setup(console: Console) -> int:
         return 2
 
     if choice is None:
-        console.print("[dim]Nothing changed.[/dim]")
+        console.print("[muted]Nothing changed.[/muted]")
         return 0
 
     configure = {
@@ -218,12 +223,12 @@ def run_setup(console: Console) -> int:
 
     console.print(
         "\n[bold]Ready.[/bold]\n"
-        "  [cyan]vpnctl docker-smoke-test[/cyan]  prove the tunnel works, "
+        "  [accent]vpnctl docker-smoke-test[/accent]  prove the tunnel works, "
         "without touching this machine's routing\n"
-        "  [cyan]vpnctl connect[/cyan]            route this machine through it "
-        "[dim](asks for your password: moving the default route needs root)[/dim]\n"
-        "  [cyan]vpnctl diagnose[/cyan]           if connecting fails, what this "
+        "  [accent]vpnctl connect[/accent]            route this machine through it "
+        "[muted](asks for your password: moving the default route needs root)[/muted]\n"
+        "  [accent]vpnctl diagnose[/accent]           if connecting fails, what this "
         "network is actually blocking\n"
-        "  [cyan]vpnctl[/cyan]                    the menu"
+        "  [accent]vpnctl[/accent]                    the menu"
     )
     return 0

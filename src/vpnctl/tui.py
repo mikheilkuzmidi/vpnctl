@@ -619,4 +619,4 @@ def run_tui() -> None:
     finally:
         stop.set()
         probe_thread.join(timeout=2)
-        console.print("\n[dim]Monitor stopped.[/dim]")
+        console.print("\n[muted]Monitor stopped.[/muted]")
