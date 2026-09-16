@@ -4,6 +4,12 @@ Runs the self-hosted WireGuard config inside an isolated Docker container, so
 the host Mac's routing and interfaces are untouched. This validates the VPS,
 keys, and tunnel behavior, but it does not replace the native macOS client
 path.
+
+The container gets its own network namespace, NET_ADMIN and a tun device, and
+nothing else: no --net=host, no privileged mode. So the tunnel it builds
+carries only the container's traffic, and the Mac keeps its own default route
+throughout. That makes this the safe way to answer "does this tunnel work",
+which is a different question from "connect me to it".
 """
 
 from __future__ import annotations
@@ -24,6 +30,14 @@ _IMAGE = "vpnctl/wg-smoke:local"
 class DockerSmokeResult:
     public_ip: str
     output: str
+
+
+class NoHandshake(RuntimeError):
+    """The interface came up but the peer never replied."""
+
+
+class NotConfigured(RuntimeError):
+    """There is no self-hosted tunnel described in the config to test."""
 
 
 def _run(args: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess:
@@ -90,8 +104,27 @@ def run_docker_smoke(
     """Run the configured self-hosted WireGuard client inside Docker."""
     _require_docker()
 
-    if not cfg.wg_custom.enabled:
-        raise RuntimeError("wireguard-custom is disabled in config")
+    # Deliberately not gated on cfg.wg_custom.enabled. That flag decides
+    # whether the provider is a candidate for connecting *this machine*, and
+    # wanting to check a tunnel in a container is not a reason to make it one.
+    # What the test does need is a tunnel actually described in the config.
+    missing = [
+        name
+        for name, value in (
+            ("endpoint", cfg.wg_custom.endpoint),
+            ("public_key", cfg.wg_custom.public_key),
+            ("key_file", cfg.wg_custom.key_file),
+            ("address", cfg.wg_custom.address),
+        )
+        if not value
+    ]
+    if missing:
+        raise NotConfigured(
+            "wireguard-custom has no "
+            + ", ".join(missing)
+            + " in the config, so there is no tunnel to test. "
+            "`vpnctl bootstrap-wireguard-vps` sets one up."
+        )
 
     adapter = WgCustomAdapter(
         endpoint=cfg.wg_custom.endpoint,
@@ -130,6 +163,17 @@ def run_docker_smoke(
         )
 
     combined = (run.stdout or "") + (run.stderr or "")
+    if "NO_HANDSHAKE=1" in combined:
+        raise NoHandshake(
+            f"The tunnel came up, but {_expected_public_ip(cfg.wg_custom.endpoint)} "
+            "never answered the handshake.\n"
+            "The interface, keys and routes are all fine: packets went out and "
+            "nothing came back.\n"
+            "Check that the server is running, that UDP "
+            f"{cfg.wg_custom.endpoint.rpartition(':')[2]} is open to you, and that "
+            "this client's public key is a peer on it.\n"
+            f"output:\n{combined}"
+        )
     if run.returncode != 0:
         raise RuntimeError(
             "Docker smoke test failed.\n"

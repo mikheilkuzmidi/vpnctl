@@ -25,7 +25,7 @@ from vpnctl.bootstrap import bootstrap_wireguard_vps
 from vpnctl.tailscale_bootstrap import bootstrap_tailscale_exit_node
 from vpnctl import menu
 from vpnctl.config import config_path, load_config
-from vpnctl.docker_smoke import run_docker_smoke
+from vpnctl.docker_smoke import NoHandshake, NotConfigured, run_docker_smoke
 from vpnctl.providers.base import ProviderStatus
 from vpnctl.selector import (
     build_providers,
@@ -310,15 +310,25 @@ def docker_smoke_test(rebuild: bool) -> None:
     cfg = load_config()
     console.print(
         "[bold]Running Docker WireGuard smoke test…[/bold] "
-        "[dim](host network stays untouched)[/dim]"
+        "[dim](this machine keeps its own default route throughout)[/dim]"
     )
-    try:
-        result = run_docker_smoke(cfg, rebuild=rebuild)
-    except RuntimeError as exc:
-        err_console.print(str(exc))
-        sys.exit(1)
+    # The first run builds an Ubuntu image, which is the slow part and looks
+    # like a hang without saying so.
+    with console.status("[dim]preparing the container…[/dim]", spinner="dots"):
+        try:
+            result = run_docker_smoke(cfg, rebuild=rebuild)
+        except NotConfigured as exc:
+            err_console.print(f"[yellow]{exc}[/yellow]")
+            sys.exit(2)
+        except NoHandshake as exc:
+            err_console.print(f"[red]No handshake.[/red] {exc}")
+            sys.exit(1)
+        except RuntimeError as exc:
+            err_console.print(str(exc))
+            sys.exit(1)
 
-    console.print(f"[green]✓[/green] Docker tunnel public IP: {result.public_ip}")
+    console.print(f"[green]✓[/green] Tunnel works. Container egress IP: {result.public_ip}")
+    console.print("[dim]  That is the VPS, so traffic inside the tunnel really is leaving there.[/dim]")
 
 
 @main.command("bootstrap-wireguard-vps")
@@ -654,6 +664,8 @@ _MENU: list[tuple[str, str, str]] = [
     ("Show status", "status", "Current tunnel and the last benchmark result"),
     ("Split tunnel", "split-tunnel-list", "The CIDRs that bypass the tunnel"),
     ("Disconnect", "disconnect", "Tear down any active tunnel"),
+    ("Test the tunnel in a sandbox", "docker-smoke-test",
+     "Brings the self-hosted tunnel up inside Docker, leaving this machine alone"),
     ("Exit", "exit", ""),
 ]
 
