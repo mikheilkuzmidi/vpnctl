@@ -55,15 +55,21 @@ def test_warp_wireguard_doctor_does_not_register(tmp_path):
     assert any("registered yet" in h for h in result.hints)
 
 
-def test_warp_wireguard_doctor_flags_a_split_tunnel_clash(tmp_path):
-    """WARP's own address is inside 172.16.0.0/12."""
+def test_warp_wireguard_doctor_notes_the_split_tunnel_overlap(tmp_path):
+    """WARP's address sits inside 172.16.0.0/12, a commonly excluded range.
+
+    Worth saying, but not a fault: the address is a /32 on the interface and
+    the longer prefix wins, so reporting it as a failure would be wrong.
+    """
     device = tmp_path / "warp-device.json"
     warp.save(_fake_device(), device)
-    result = WarpWireguardAdapter(
-        excludes=["172.16.0.0/12"], device_path=device
-    ).doctor()
-    assert not result.ok
-    assert any("172.16.0.0/12" in i for i in result.issues)
+    with patch("shutil.which", return_value="/opt/homebrew/bin/wg-quick"):
+        result = WarpWireguardAdapter(
+            excludes=["172.16.0.0/12"], device_path=device
+        ).doctor()
+    assert result.ok
+    assert result.issues == []
+    assert any("172.16.0.0/12" in h and "Harmless" in h for h in result.hints)
 
 
 def test_warp_masque_doctor_ok():

@@ -229,3 +229,12 @@ def configure_wg_custom(
     )
     _save_raw_config(raw)
     return _CONFIG_FILE
+
+
+def set_provider_enabled(provider_id: str, enabled: bool) -> Path:
+    """Turn one provider on or off in the config file."""
+    raw = _load_raw_config()
+    providers = raw.setdefault("providers", {})
+    providers.setdefault(provider_id, {})["enabled"] = enabled
+    _save_raw_config(raw)
+    return _CONFIG_FILE

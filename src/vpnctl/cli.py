@@ -39,6 +39,7 @@ from vpnctl.selector import (
     run_benchmark,
     save_results,
 )
+from vpnctl.setup_wizard import needs_setup, run_setup
 from vpnctl.split_tunnel import list_warp_excludes
 from vpnctl.toml_utils import dumps as toml_dumps
 from vpnctl.tui import run_tui
@@ -303,6 +304,12 @@ def disconnect() -> None:
         console.print("[dim]No active tunnels.[/dim]")
 
 
+@main.command("setup")
+def setup() -> None:
+    """Get this machine ready to connect: one question, then done."""
+    sys.exit(run_setup(console))
+
+
 @main.command("docker-smoke-test")
 @click.option(
     "--provider",
@@ -318,7 +325,7 @@ def disconnect() -> None:
     help="Rebuild the Docker smoke-test image before running it.",
 )
 def docker_smoke_test(provider: str, rebuild: bool) -> None:
-    """Validate wireguard-custom inside Docker without touching host routing."""
+    """Prove a tunnel works inside Docker, without touching this machine."""
     cfg = load_config()
     console.print(
         f"[bold]Testing {provider} inside Docker…[/bold] "
@@ -685,6 +692,7 @@ _MENU: list[tuple[str, str, str]] = [
     ("Disconnect", "disconnect", "Tear down any active tunnel"),
     ("Test a tunnel in a sandbox", "docker-smoke-test",
      "Brings a tunnel up inside Docker to prove it works, leaving this machine alone"),
+    ("Run setup again", "setup", "Choose between a free VPN and your own server"),
     ("Exit", "exit", ""),
 ]
 
@@ -696,6 +704,16 @@ def run_menu(ctx: click.Context) -> int:
     one implementation of each action rather than a menu copy that drifts.
     """
     try:
+        # A fresh clone has no config, so the menu would open onto a tool with
+        # nothing enabled but the control. Setup first, once.
+        if needs_setup():
+            code = run_setup(console)
+            if code != 0:
+                return code
+            console.print("\n[dim]press any key for the menu[/dim]")
+            with menu.raw_mode():
+                menu.read_key()
+
         while True:
             with menu.raw_mode():
                 choice = menu.select(

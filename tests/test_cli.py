@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import pytest
 from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
@@ -276,3 +277,92 @@ def test_results_table_keeps_its_columns_aligned(capsys):
     row = next(line for line in lines if "direct" in line)
     assert row.index("direct") == header.index("Provider")
     assert row.lstrip().startswith("1")
+
+
+# ---------------------------------------------------------------------------
+# connect must not report success on a tunnel that carries nothing
+# ---------------------------------------------------------------------------
+
+
+def _wg_adapter(**kwargs):
+    from vpnctl.providers.wg_custom import WgCustomAdapter
+
+    defaults = dict(
+        endpoint="203.0.113.10:51820",
+        public_key="B" * 43 + "=",
+        private_key="A" * 43 + "=",
+        address="10.8.0.2/32",
+    )
+    defaults.update(kwargs)
+    return WgCustomAdapter(**defaults)
+
+
+def test_handshake_age_is_none_when_the_peer_has_never_answered():
+    adapter = _wg_adapter()
+    with patch.object(adapter, "_resolve_real_interface", return_value="utun7"):
+        # wg reports a zero timestamp for a peer that has never been heard from.
+        with patch.object(adapter, "_wg_show_field", return_value="PEERKEY\t0\n"):
+            assert adapter.handshake_age() is None
+
+
+def test_handshake_age_reports_seconds_since_the_newest_peer():
+    import time as _time
+
+    adapter = _wg_adapter()
+    now = int(_time.time())
+    with patch.object(adapter, "_resolve_real_interface", return_value="utun7"):
+        with patch.object(
+            adapter,
+            "_wg_show_field",
+            return_value=f"OLDPEER\t{now - 300}\nNEWPEER\t{now - 4}\n",
+        ):
+            age = adapter.handshake_age()
+    assert age is not None and age <= 6
+
+
+def test_connect_tears_down_a_tunnel_that_never_hands_shook(monkeypatch):
+    """The failure mode that leaves a machine with no internet.
+
+    wg-quick up succeeds, the default route moves onto the interface, and the
+    peer never answers. Reporting connected here is worse than failing.
+    """
+    from vpnctl.providers.base import ProviderStatus
+    from vpnctl.providers import wg_custom as wg
+
+    monkeypatch.setattr(wg, "_HANDSHAKE_TIMEOUT", 0.2)
+    monkeypatch.setattr(wg, "_CONNECT_TIMEOUT", 0.2)
+    monkeypatch.setattr(wg, "get_default_gateway", lambda: "192.168.1.1")
+
+    adapter = _wg_adapter()
+    torn_down = []
+
+    ok = MagicMock(returncode=0, stdout="", stderr="")
+    with patch("shutil.which", return_value="/opt/homebrew/bin/wg-quick"), \
+         patch("subprocess.run", return_value=ok), \
+         patch.object(adapter, "status", return_value=ProviderStatus.CONNECTED), \
+         patch.object(adapter, "_resolve_real_interface", return_value="utun7"), \
+         patch.object(adapter, "_latest_handshake", return_value=None), \
+         patch.object(adapter, "disconnect", side_effect=lambda: torn_down.append(1)):
+        with pytest.raises(RuntimeError) as exc:
+            adapter.connect()
+
+    assert torn_down, "a tunnel that never hands shook must be torn down"
+    message = str(exc.value)
+    assert "never" in message and "answered" in message
+    assert "back on its own connection" in message
+    assert "docker-smoke-test" in message
+
+
+def test_connect_succeeds_once_the_peer_answers(monkeypatch):
+    from vpnctl.providers.base import ProviderStatus
+    from vpnctl.providers import wg_custom as wg
+
+    monkeypatch.setattr(wg, "get_default_gateway", lambda: "192.168.1.1")
+    adapter = _wg_adapter()
+    ok = MagicMock(returncode=0, stdout="", stderr="")
+    with patch("shutil.which", return_value="/opt/homebrew/bin/wg-quick"), \
+         patch("subprocess.run", return_value=ok), \
+         patch.object(adapter, "status", return_value=ProviderStatus.CONNECTED), \
+         patch.object(adapter, "_resolve_real_interface", return_value="utun7"), \
+         patch.object(adapter, "_latest_handshake", return_value=2):
+        adapter.connect()  # must not raise

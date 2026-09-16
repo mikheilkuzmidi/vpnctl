@@ -129,20 +129,20 @@ class WarpWireguardAdapter(WgCustomAdapter):
                 f"WARP device registered, tunnel address {cached.address_v4}."
             )
 
-        # WARP hands out an address in 172.16.0.0/12, so a split-tunnel
-        # exclusion covering that range would route the tunnel's own address
-        # back to the local gateway.
-        if cached is not None and any(
-            exclude.startswith("172.16.") or exclude == "172.16.0.0/12"
-            for exclude in self._excludes
-        ):
-            result.issues.append(
-                f"split tunnel excludes {', '.join(self._excludes)}, which "
-                f"covers WARP's own address {cached.address_v4}"
-            )
+        # WARP hands out an address inside 172.16.0.0/12, which is also a
+        # range people commonly exclude from the tunnel. Worth mentioning, but
+        # not a fault: the tunnel's address is a /32 on the interface itself,
+        # and a /32 beats a /12 via the gateway, so the more specific route
+        # wins and the tunnel still works. Only flagged so that anyone
+        # debugging routing knows the overlap is there.
+        overlapping = [
+            exclude for exclude in self._excludes if exclude.startswith("172.16.")
+        ]
+        if cached is not None and overlapping:
             result.hints.append(
-                "Remove that exclusion: vpnctl split-tunnel remove 172.16.0.0/12"
+                f"Split tunnel excludes {', '.join(overlapping)}, which overlaps "
+                f"WARP's own address {cached.address_v4}. Harmless, because the "
+                "interface holds it as a /32 and the longer prefix wins."
             )
-            result.ok = False
 
         return result

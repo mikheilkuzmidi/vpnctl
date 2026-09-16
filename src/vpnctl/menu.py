@@ -42,7 +42,16 @@ def raw_mode():
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
     try:
+        # cbreak rather than raw, so Ctrl-C still raises KeyboardInterrupt
+        # instead of arriving as a byte nobody handles.
         tty.setcbreak(fd)
+        # cbreak leaves ECHO on, which prints every arrow key as ^[[B. The
+        # redraw usually wipes it within a frame, so it reads as flicker
+        # rather than as text, and whatever is on screen when the menu exits
+        # keeps it. Turning ECHO off is the whole fix.
+        attrs = termios.tcgetattr(fd)
+        attrs[3] &= ~termios.ECHO
+        termios.tcsetattr(fd, termios.TCSADRAIN, attrs)
         yield
     finally:
         # Restore whatever happened, or the shell is left without echo and the

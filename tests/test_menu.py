@@ -71,3 +71,36 @@ def test_rtt_and_loss_come_from_one_ping_run() -> None:
 
 def test_loss_is_absent_rather_than_zero_when_ping_says_nothing() -> None:
     assert _parse_loss("no statistics here") is None
+
+
+def test_raw_mode_turns_echo_off_and_leaves_signals_on(monkeypatch):
+    """Arrow keys must not print themselves, but Ctrl-C must still work."""
+    import termios
+
+    import pytest
+
+    class FakeStdin:
+        def isatty(self) -> bool:
+            return True
+
+        def fileno(self) -> int:
+            return 0
+
+    # lflag starts with both ECHO and ISIG set, as a normal terminal has.
+    state = [0, 0, 0, termios.ECHO | termios.ISIG, 0, 0, [b""] * 32]
+    applied: list[list] = []
+
+    monkeypatch.setattr(termios, "tcgetattr", lambda fd: list(state))
+    monkeypatch.setattr(
+        termios, "tcsetattr", lambda fd, when, attrs: applied.append(list(attrs))
+    )
+    monkeypatch.setattr("tty.setcbreak", lambda fd: None)
+    monkeypatch.setattr("sys.stdin", FakeStdin())
+
+    with menu.raw_mode():
+        pass
+
+    inside = applied[0]
+    assert not inside[3] & termios.ECHO, "ECHO must be cleared"
+    assert inside[3] & termios.ISIG, "ISIG must survive, or Ctrl-C is swallowed"
+    assert applied[-1][3] == state[3], "the original flags must be restored"

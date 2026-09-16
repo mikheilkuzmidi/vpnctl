@@ -38,6 +38,9 @@ _WG = "wg"
 _PROVIDER_ID = "wireguard-custom"
 
 _CONNECT_TIMEOUT = 15
+# Generous, because the first handshake also pays for DNS resolution of the
+# endpoint and any retry the peer needs.
+_HANDSHAKE_TIMEOUT = 25
 _POLL_INTERVAL = 0.5
 
 
@@ -186,6 +189,50 @@ class WgCustomAdapter(ProviderAdapter):
             )
         return result
 
+    def _latest_handshake(self, interface: str) -> Optional[int]:
+        """Seconds since the most recent handshake, or None if there has been none.
+
+        `wg show <iface>` succeeding only means the interface exists. On a
+        network that drops WireGuard, the interface comes up, the default
+        route is moved onto it, and not a single packet is ever answered: the
+        machine is left with no working connection while every check that
+        looks at the interface reports success.
+        """
+        result = self._wg_show_field(interface, "latest-handshakes")
+        if result is None:
+            return None
+        newest = 0
+        for line in result.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                newest = max(newest, int(parts[1]))
+        if newest == 0:
+            return None
+        return max(0, int(time.time()) - newest)
+
+    def _wg_show_field(self, interface: str, field: str) -> Optional[str]:
+        result = subprocess.run(
+            [_WG, "show", interface, field],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0 and "Permission denied" in result.stderr:
+            result = subprocess.run(
+                ["sudo", "-n", _WG, "show", interface, field],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        return result.stdout if result.returncode == 0 else None
+
+    def handshake_age(self) -> Optional[int]:
+        """Seconds since this tunnel last heard from its peer, if ever."""
+        interface = self._resolve_real_interface()
+        if interface is None:
+            return None
+        return self._latest_handshake(interface)
+
     def _resolve_real_interface(self) -> Optional[str]:
         real_interface = self._read_alias_name()
         if real_interface:
@@ -263,15 +310,41 @@ class WgCustomAdapter(ProviderAdapter):
                 f"wg-quick up failed: {result.stderr.strip()}"
             )
         deadline = time.monotonic() + _CONNECT_TIMEOUT
+        interface: Optional[str] = None
         while time.monotonic() < deadline:
             if self.status() == ProviderStatus.CONNECTED:
+                interface = self._resolve_real_interface()
+                break
+            time.sleep(_POLL_INTERVAL)
+
+        if interface is None:
+            self.disconnect()
+            raise RuntimeError(
+                f"{self._provider_id}: timed out waiting for interface "
+                f"{self._interface}"
+            )
+
+        # The interface existing is not the same as the tunnel working, and
+        # the difference matters here more than anywhere else: the default
+        # route has just been moved onto it. Returning success without a
+        # handshake hands back a machine with no internet.
+        handshake_deadline = time.monotonic() + _HANDSHAKE_TIMEOUT
+        while time.monotonic() < handshake_deadline:
+            if self._latest_handshake(interface) is not None:
                 if self._excludes and self._pre_vpn_gateway:
                     add_macos_routes(self._excludes, self._pre_vpn_gateway)
                 return
             time.sleep(_POLL_INTERVAL)
+
         self.disconnect()
         raise RuntimeError(
-            f"{self._provider_id}: timed out waiting for interface {self._interface}"
+            f"{self._provider_id}: the tunnel came up but the peer never "
+            f"answered, so it was torn down again and this machine is back on "
+            f"its own connection.\n"
+            f"Either {self._endpoint.rpartition(':')[0] or self._endpoint} is "
+            f"not reachable, or this network drops WireGuard. "
+            f"`vpnctl docker-smoke-test` tells them apart without touching "
+            f"your routing."
         )
 
     def disconnect(self) -> None:
