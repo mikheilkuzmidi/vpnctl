@@ -212,8 +212,14 @@ vpnctl bootstrap-tailscale-exit-node \
 
 Generate an auth key at https://login.tailscale.com/admin/settings/keys,
 type Reusable. The command installs Tailscale, enables IPv4 and IPv6
-forwarding persistently, and advertises the node as an exit node. Approve it
-in the admin console, then on the Mac:
+forwarding persistently, and advertises the node as an exit node.
+
+Open **UDP 41641** on the VPS firewall. Without it Tailscale still works but
+falls back to DERP relays, which roughly doubles the latency. On Lightsail
+that is the Networking tab; TCP 22 needs to stay, and TCP 80 can go if
+nothing else uses it.
+
+Then approve the node in the admin console, and on the Mac:
 
 ```bash
 tailscale set --exit-node=my-exit

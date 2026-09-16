@@ -36,12 +36,12 @@ min_score_improvement_pct  = 20.0
 #   wireguard-custom          : injects static macOS routes after wg-quick up
 #
 # Set enabled = true then list any CIDRs or host IPs you want to bypass.
-# Example - keep your IDE / AI assistant on the plain internet:
+# Example - keep a latency-sensitive service on the plain internet:
 #
 # [split_tunnel]
 # enabled = true
 # excludes = [
-#   "34.107.0.0/16",    # Codeium / Windsurf API
+#   "34.107.0.0/16",    # a latency-sensitive API
 #   "162.159.0.0/16",   # Cloudflare
 #   "192.168.0.0/16",   # local LAN (always a good idea)
 # ]
