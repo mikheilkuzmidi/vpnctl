@@ -162,3 +162,51 @@ def test_riseup_ignores_a_protocol_it_does_not_recognise():
         ]
     }
     assert _parse_gateways(eip)[0].openvpn == [("tcp", 1194)]
+
+
+def test_warp_accepts_the_real_api_response(monkeypatch):
+    """Port 0 is how the API says "use the ports list".
+
+    The first version of this validation checked endpoint.v4 as a full
+    endpoint and rejected the genuine response, so connect failed with
+    "impossible port: 162.159.192.8:0" on a perfectly good registration.
+    """
+    from vpnctl import warp
+
+    payload = {
+        "id": "00000000-0000-0000-0000-000000000000",
+        "token": "t" * 36,
+        "config": {
+            "interface": {
+                "addresses": {
+                    "v4": "172.16.0.2",
+                    "v6": "2606:4700:110:8b52:5097:9625:94e3:6df4",
+                }
+            },
+            "peers": [
+                {
+                    "public_key": "C" * 43 + "=",
+                    "endpoint": {
+                        "v4": "162.159.192.8:0",
+                        "v6": "[2606:4700:d0::a29f:c006]:0",
+                        "host": "engage.cloudflareclient.com:2408",
+                        "ports": [2408, 500, 1701, 4500],
+                    },
+                }
+            ],
+        },
+    }
+    monkeypatch.setattr(
+        warp, "generate_keypair", lambda: ("A" * 43 + "=", "B" * 43 + "=")
+    )
+    monkeypatch.setattr(warp, "_post_registration", lambda key, client: payload)
+    monkeypatch.setattr(warp, "_activate", lambda *a, **k: None)
+
+    device = warp.register()
+    # Validation normalises it, so a bare address gains its /32 here rather
+    # than in interface_address().
+    assert device.address_v4 == "172.16.0.2/32"
+    assert device.interface_address() == "172.16.0.2/32"
+    assert device.endpoint() == "engage.cloudflareclient.com:2408"
+    assert device.endpoint(prefer_host=False) == "162.159.192.8:2408"
+    assert device.port == 2408

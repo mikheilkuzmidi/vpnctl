@@ -96,8 +96,8 @@ class WarpDevice:
         if prefer_host and self.endpoint_host:
             _, _, port = self.endpoint_host.rpartition(":")
             return self.endpoint_host if port.isdigit() else f"{self.endpoint_host}:{self.port}"
-        literal = self.endpoint_v4.rpartition(":")[0] or self.endpoint_v4
-        return f"{literal}:{self.port}"
+        # Already stored without its placeholder port.
+        return f"{self.endpoint_v4}:{self.port}"
 
 
 def _headers(token: Optional[str] = None) -> dict[str, str]:
@@ -227,8 +227,13 @@ def register() -> WarpDevice:
             )
             if endpoint.get("host")
             else "",
-            endpoint_v4=validate.endpoint(
-                endpoint.get("v4", ""), "endpoint address"
+            # The API reports the anycast endpoints as "address:0" and puts
+            # the real ports in a separate list, so this is validated as an
+            # address with the placeholder port stripped. Checking it as a
+            # full endpoint rejected the genuine response and broke connect.
+            endpoint_v4=validate.ip_address(
+                endpoint["v4"].rpartition(":")[0] or endpoint["v4"],
+                "endpoint address",
             )
             if endpoint.get("v4")
             else "",
