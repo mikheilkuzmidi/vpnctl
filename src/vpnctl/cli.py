@@ -1,4 +1,4 @@
-"""vpnctl CLI — entry-point for all user-facing commands.
+"""vpnctl CLI - entry-point for all user-facing commands.
 
 Commands:
   doctor      Pre-flight dependency check for all enabled providers.
@@ -86,7 +86,7 @@ def doctor() -> None:
     if all_ok:
         console.print("\n[green]All checks passed.[/green]")
     else:
-        console.print("\n[yellow]Some checks failed — see hints above.[/yellow]")
+        console.print("\n[yellow]Some checks failed - see hints above.[/yellow]")
         sys.exit(1)
 
 
@@ -164,7 +164,7 @@ def connect(provider: Optional[str]) -> None:
             winner = pick_winner(results)
 
         if winner is None:
-            err_console.print("All providers failed — cannot connect.")
+            err_console.print("All providers failed - cannot connect.")
             sys.exit(1)
 
         target = next(
@@ -195,7 +195,7 @@ def connect(provider: Optional[str]) -> None:
         console.print(f"[green]✓[/green] {target.provider_id} connected.")
     except RuntimeError as exc:
         err_console.print(f"Connect failed: {exc}")
-        console.print("Rolling back — disconnecting…")
+        console.print("Rolling back - disconnecting…")
         try:
             target.disconnect()
         except Exception:
@@ -592,11 +592,11 @@ def _print_results_table(results) -> None:
             table.add_row(
                 str(i),
                 r.provider_id,
-                "—",
-                "—",
-                "—",
-                "—",
-                "—",
+                "-",
+                "-",
+                "-",
+                "-",
+                "-",
                 f"[red]{r.error}[/red]",
             )
         else:

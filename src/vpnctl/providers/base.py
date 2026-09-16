@@ -1,7 +1,7 @@
 """Abstract provider adapter contract.
 
 Every VPN provider must implement this interface.  The benchmark engine,
-selector, and watch loop are all provider-agnostic — they only call methods
+selector, and watch loop are all provider-agnostic - they only call methods
 defined here.
 """
 
@@ -39,7 +39,7 @@ class ProbeResult:
 
     def __str__(self) -> str:
         if not self.ok:
-            return f"{self.provider_id}: ERROR — {self.error}"
+            return f"{self.provider_id}: ERROR - {self.error}"
         return (
             f"{self.provider_id}: rtt={self.median_rtt_ms:.1f}ms "
             f"jitter={self.jitter_ms:.1f}ms loss={self.loss_pct:.1f}% "

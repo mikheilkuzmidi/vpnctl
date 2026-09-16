@@ -2,7 +2,7 @@
 
 Config lives at ~/.config/vpnctl/config.toml.
 A default file is written on first run.
-Secrets (WireGuard private keys) live in separate files — never in config.toml.
+Secrets (WireGuard private keys) live in separate files - never in config.toml.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ _CONFIG_FILE = _CONFIG_DIR / "config.toml"
 _RESULTS_FILE = _CONFIG_DIR / "last_benchmark.toml"
 
 _DEFAULT_CONFIG = """\
-# vpnctl configuration — ~/.config/vpnctl/config.toml
+# vpnctl configuration - ~/.config/vpnctl/config.toml
 
 [policy]
 probe_interval_minutes     = 10
@@ -29,14 +29,14 @@ min_rtt_improvement_ms     = 15.0
 min_score_improvement_pct  = 20.0
 
 # ---------------------------------------------------------------------------
-# Split tunnelling — route specific destinations via your normal internet
+# Split tunnelling - route specific destinations via your normal internet
 # connection instead of through the VPN.  Works for all providers:
 #
 #   WARP (masque / wireguard): uses warp-cli split-tunnel add/remove
 #   wireguard-custom          : injects static macOS routes after wg-quick up
 #
 # Set enabled = true then list any CIDRs or host IPs you want to bypass.
-# Example — keep your IDE / AI assistant on the plain internet:
+# Example - keep your IDE / AI assistant on the plain internet:
 #
 # [split_tunnel]
 # enabled = true

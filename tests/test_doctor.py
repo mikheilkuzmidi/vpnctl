@@ -1,4 +1,4 @@
-"""Tests for provider doctor() checks — missing tools, bad permissions."""
+"""Tests for provider doctor() checks - missing tools, bad permissions."""
 
 from __future__ import annotations
 

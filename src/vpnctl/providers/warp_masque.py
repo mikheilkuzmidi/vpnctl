@@ -1,4 +1,4 @@
-"""Cloudflare WARP adapter — MASQUE (HTTP/3) mode.
+"""Cloudflare WARP adapter - MASQUE (HTTP/3) mode.
 
 Uses the `warp-cli` command-line tool shipped with the Cloudflare WARP macOS
 client.  Switches the protocol to MASQUE before connecting so the benchmark
@@ -103,7 +103,7 @@ class WarpMasqueAdapter(ProviderAdapter):
             result = _run(["settings"], check=False)
             if result.returncode != 0:
                 issues.append(
-                    "warp-cli is present but returned an error — "
+                    "warp-cli is present but returned an error - "
                     "is WARP registered? Run: warp-cli registration new"
                 )
         return DoctorResult(

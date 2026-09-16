@@ -1,4 +1,4 @@
-"""Cloudflare WARP adapter — WireGuard mode.
+"""Cloudflare WARP adapter - WireGuard mode.
 
 Identical lifecycle to WarpMasqueAdapter but switches the protocol to
 `wireguard` before connecting, so both WARP modes appear as independent
@@ -103,7 +103,7 @@ class WarpWireguardAdapter(ProviderAdapter):
             result = _run(["settings"], check=False)
             if result.returncode != 0:
                 issues.append(
-                    "warp-cli is present but returned an error — "
+                    "warp-cli is present but returned an error - "
                     "is WARP registered? Run: warp-cli registration new"
                 )
         return DoctorResult(

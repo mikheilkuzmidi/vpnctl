@@ -1,13 +1,13 @@
-# vpnctl — VPN Management Toolkit for macOS
+# vpnctl - VPN Management Toolkit for macOS
 
 `vpnctl` manages VPN tunnels from your Mac. The primary use-case is a
-self-hosted **Tailscale exit node** on a cloud VPS — one command sets it up
+self-hosted **Tailscale exit node** on a cloud VPS - one command sets it up
 from scratch. The free baseline of **Cloudflare WARP** and a legacy
 **WireGuard** path are also supported.
 
 ---
 
-## Tailscale Exit Node — One-Command Setup
+## Tailscale Exit Node - One-Command Setup
 
 This is the recommended, production-grade path. All traffic routes through
 your own VPS, appearing to originate from its public IP.
@@ -41,7 +41,7 @@ Generate an auth key at https://login.tailscale.com/admin/settings/keys
 (use type **Reusable**, no expiry recommended for long-lived servers).
 
 **What this command does on the VPS:**
-- Installs Tailscale (idempotent — safe to re-run)
+- Installs Tailscale (idempotent - safe to re-run)
 - Enables IPv4 + IPv6 forwarding persistently via `sysctl`
 - Applies UDP GRO optimisation (`ethtool`) for maximum throughput
 - Starts Tailscale advertising itself as an exit node with `--accept-routes=false`
@@ -164,22 +164,22 @@ vpnctl docker-smoke-test
 
 ```
 src/vpnctl/
-├── cli.py                  — Click entry-point, all user-facing commands
-├── tailscale_bootstrap.py  — Tailscale exit-node VPS provisioning over SSH
-├── bootstrap.py            — WireGuard VPS provisioning over SSH
-├── config.py               — TOML config loader + schema defaults
-├── probe.py                — RTT, jitter, loss, throughput, scoring
-├── selector.py             — Ranks providers, enforces policy, picks winner
-├── watch.py                — Periodic background loop
-├── tui.py                  — Live Rich TUI monitor
-├── split_tunnel.py         — macOS split-tunnel helpers
-├── docker_smoke.py         — Docker-isolated WireGuard smoke test
-├── toml_utils.py           — TOML writer shim
+├── cli.py                  - Click entry-point, all user-facing commands
+├── tailscale_bootstrap.py  - Tailscale exit-node VPS provisioning over SSH
+├── bootstrap.py            - WireGuard VPS provisioning over SSH
+├── config.py               - TOML config loader + schema defaults
+├── probe.py                - RTT, jitter, loss, throughput, scoring
+├── selector.py             - Ranks providers, enforces policy, picks winner
+├── watch.py                - Periodic background loop
+├── tui.py                  - Live Rich TUI monitor
+├── split_tunnel.py         - macOS split-tunnel helpers
+├── docker_smoke.py         - Docker-isolated WireGuard smoke test
+├── toml_utils.py           - TOML writer shim
 └── providers/
-    ├── base.py             — Abstract ProviderAdapter contract
-    ├── warp_masque.py      — WARP MASQUE adapter
-    ├── warp_wireguard.py   — WARP WireGuard adapter
-    └── wg_custom.py        — Self-hosted WireGuard adapter
+    ├── base.py             - Abstract ProviderAdapter contract
+    ├── warp_masque.py      - WARP MASQUE adapter
+    ├── warp_wireguard.py   - WARP WireGuard adapter
+    └── wg_custom.py        - Self-hosted WireGuard adapter
 
-setup_tailscale_exit_node.sh  — VPS-side Tailscale setup script
+setup_tailscale_exit_node.sh  - VPS-side Tailscale setup script
 ```

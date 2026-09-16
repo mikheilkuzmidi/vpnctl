@@ -1,4 +1,4 @@
-"""Probe engine — RTT, jitter, packet loss, throughput, scoring.
+"""Probe engine - RTT, jitter, packet loss, throughput, scoring.
 
 run_probe() is the single entry-point used by every provider adapter.
 It assumes the tunnel is already connected when called.
@@ -141,7 +141,7 @@ def _compute_score(
 def run_probe(provider_id: str) -> ProbeResult:
     """Run a full quality probe and return a ProbeResult.
 
-    Never raises — errors are captured in ProbeResult.error.
+    Never raises - errors are captured in ProbeResult.error.
     """
     all_rtts: list[float] = []
     loss_samples: list[float] = []
@@ -160,7 +160,7 @@ def run_probe(provider_id: str) -> ProbeResult:
             loss_pct=100.0,
             throughput_mbps=0.0,
             score=0.0,
-            error="All ping targets unreachable — offline or captive portal?",
+            error="All ping targets unreachable - offline or captive portal?",
         )
 
     median_rtt = statistics.median(all_rtts)

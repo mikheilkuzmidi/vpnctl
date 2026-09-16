@@ -59,12 +59,12 @@ class TestFindSetupScript:
 
 class TestRunRemoteSetup:
     def test_parses_ip_and_running_status(self):
-        stdout = _vps_stdout(ip="100.91.177.49", status="Running")
+        stdout = _vps_stdout(ip="100.64.0.1", status="Running")
         with patch("subprocess.run", return_value=_proc(stdout)):
             auth_url, ip, status = _run_remote_setup(
                 Path("/fake.pem"), "ubuntu@1.2.3.4", "exit-node", ""
             )
-        assert ip == "100.91.177.49"
+        assert ip == "100.64.0.1"
         assert status == "Running"
         assert auth_url == ""
 
@@ -136,7 +136,7 @@ class TestBootstrapTailscaleExitNode:
     def test_returns_result_when_authenticated(self, tmp_path):
         key = self._write_key(tmp_path)
         script = self._write_script(tmp_path)
-        stdout = _vps_stdout(ip="100.91.177.49", status="Running")
+        stdout = _vps_stdout(ip="100.64.0.1", status="Running")
 
         with patch("vpnctl.tailscale_bootstrap._find_setup_script", return_value=script):
             with patch("shutil.which", return_value="/usr/bin/ssh"):
@@ -149,7 +149,7 @@ class TestBootstrapTailscaleExitNode:
                     )
 
         assert isinstance(result, TailscaleBootstrapResult)
-        assert result.tailscale_ip == "100.91.177.49"
+        assert result.tailscale_ip == "100.64.0.1"
         assert result.status == "Running"
         assert result.hostname == "frankfurt-exit"
         assert not result.needs_approval
@@ -230,7 +230,7 @@ class TestBootstrapTailscaleCLI:
         key.write_text("fake")
         fake_result = TailscaleBootstrapResult(
             hostname="frankfurt-exit",
-            tailscale_ip="100.91.177.49",
+            tailscale_ip="100.64.0.1",
             auth_url="",
             status="Running",
             needs_approval=False,
@@ -248,7 +248,7 @@ class TestBootstrapTailscaleCLI:
             )
 
         assert result.exit_code == 0
-        assert "100.91.177.49" in result.output
+        assert "100.64.0.1" in result.output
 
     def test_cli_shows_auth_url_when_needs_auth(self, tmp_path):
         from click.testing import CliRunner

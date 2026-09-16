@@ -13,7 +13,7 @@ env/
 .env
 .venv
 
-# Local data & secrets — never commit
+# Local data & secrets - never commit
 # Note: ~/.config/vpnctl/ lives outside the repo and is never tracked
 *.log
 vps.pem

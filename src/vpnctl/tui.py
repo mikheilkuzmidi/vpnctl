@@ -169,7 +169,7 @@ def _probe_loop(state: ProbeState, stop: threading.Event) -> None:
 def _fmt(value: Optional[float], unit: str, decimals: int = 1,
          warn: float = 9000.0) -> Text:
     if value is None:
-        return Text("—", style="dim")
+        return Text("-", style="dim")
     s = f"{value:.{decimals}f} {unit}"
     style = "red bold" if value >= warn else ("yellow" if value >= warn * 0.5 else "green")
     return Text(s, style=style)
@@ -235,10 +235,10 @@ def _build_layout(state: ProbeState, providers, cfg) -> Layout:
     metrics_table.add_row("", Text(""))
 
     if not any_connected:
-        metrics_table.add_row("RTT", Text("— (not connected)", style="dim"))
-        metrics_table.add_row("Jitter", Text("—", style="dim"))
-        metrics_table.add_row("Loss", Text("—", style="dim"))
-        metrics_table.add_row("Download", Text("—", style="dim"))
+        metrics_table.add_row("RTT", Text("- (not connected)", style="dim"))
+        metrics_table.add_row("Jitter", Text("-", style="dim"))
+        metrics_table.add_row("Loss", Text("-", style="dim"))
+        metrics_table.add_row("Download", Text("-", style="dim"))
     else:
         metrics_table.add_row("RTT", _fmt(rtt, "ms", warn=200))
         metrics_table.add_row("Jitter", _fmt(jit, "ms", warn=50))
@@ -264,10 +264,10 @@ def _build_layout(state: ProbeState, providers, cfg) -> Layout:
     dl_spark = _sparkline(dl_hist)
 
     rtt_range = (
-        f"{min(rtt_hist):.0f}–{max(rtt_hist):.0f} ms" if rtt_hist else "—"
+        f"{min(rtt_hist):.0f}-{max(rtt_hist):.0f} ms" if rtt_hist else "-"
     )
     dl_range = (
-        f"{min(dl_hist):.1f}–{max(dl_hist):.1f} Mbps" if dl_hist else "—"
+        f"{min(dl_hist):.1f}-{max(dl_hist):.1f} Mbps" if dl_hist else "-"
     )
 
     right_table.add_row(

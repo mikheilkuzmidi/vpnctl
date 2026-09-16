@@ -62,7 +62,7 @@ def _warp_available() -> bool:
 def apply_warp_excludes(excludes: list[str]) -> None:
     """Register each CIDR as a WARP split-tunnel exclusion (traffic bypasses WARP).
 
-    Idempotent — adding the same entry twice is harmless.
+    Idempotent - adding the same entry twice is harmless.
     Skips silently if warp-cli is not installed.
     """
     if not excludes or not _warp_available():

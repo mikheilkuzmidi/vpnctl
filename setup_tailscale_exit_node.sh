@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs on the VPS — installs Tailscale and configures it as a pure exit node.
+# Runs on the VPS - installs Tailscale and configures it as a pure exit node.
 #
 # Usage:
 #   setup_tailscale_exit_node.sh [--hostname NAME] [--auth-key KEY]
@@ -15,7 +15,7 @@
 #   TAILSCALE_IP=100.x.x.x          after successful authentication
 #   TAILSCALE_STATUS=Running|needs-auth|error
 #
-# The script is idempotent — safe to run multiple times.
+# The script is idempotent - safe to run multiple times.
 set -euo pipefail
 
 HOSTNAME_ARG="${HOSTNAME:-$(hostname -s)}"

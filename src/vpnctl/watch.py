@@ -1,10 +1,10 @@
-"""Watch daemon — periodic probe + full benchmark with policy enforcement.
+"""Watch daemon - periodic probe + full benchmark with policy enforcement.
 
 The watch loop runs in the foreground (Ctrl-C to stop).  It has two
 interleaved timers:
 
-  probe_interval        — light RTT probe on the *active* tunnel only
-  benchmark_interval    — full cross-provider benchmark (connect each, probe,
+  probe_interval        - light RTT probe on the *active* tunnel only
+  benchmark_interval    - full cross-provider benchmark (connect each, probe,
                           disconnect, rank)
 
 Policy:
@@ -71,7 +71,7 @@ def run_watch(
 
     providers = build_providers(cfg)
     if not providers:
-        _log("No providers enabled — nothing to watch.")
+        _log("No providers enabled - nothing to watch.")
         return
 
     policy = cfg.policy
@@ -94,7 +94,7 @@ def run_watch(
     signal.signal(signal.SIGTERM, _handle_signal)
 
     _log(
-        f"Watch started — probe every {policy.probe_interval_minutes}m, "
+        f"Watch started - probe every {policy.probe_interval_minutes}m, "
         f"benchmark every {policy.benchmark_interval_minutes}m, "
         f"auto-apply={apply}"
     )
@@ -114,7 +114,7 @@ def run_watch(
 
             winner = pick_winner(results)
             if winner is None:
-                _log("All providers failed — staying put.")
+                _log("All providers failed - staying put.")
                 time.sleep(30)
                 continue
 
@@ -167,7 +167,7 @@ def run_watch(
             else:
                 _log(
                     f"[policy] {winner.provider_id} wins but gain is below thresholds "
-                    f"— staying on {active.provider_id}"
+                    f"- staying on {active.provider_id}"
                 )
                 win_counters.clear()
 

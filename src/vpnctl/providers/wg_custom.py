@@ -5,7 +5,7 @@ Disabled by default.  Enabled when the user adds an endpoint in
 
 Manages the tunnel via `wg-quick` (from wireguard-tools, installed via
 Homebrew).  The private key lives in a user-local file with strict 0600
-permissions — it is never logged or committed.
+permissions - it is never logged or committed.
 """
 
 from __future__ import annotations

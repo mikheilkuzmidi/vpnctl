@@ -1,4 +1,4 @@
-"""Tests for selector logic — scoring, ranking, policy, persistence."""
+"""Tests for selector logic - scoring, ranking, policy, persistence."""
 
 from __future__ import annotations
 

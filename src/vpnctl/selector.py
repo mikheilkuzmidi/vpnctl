@@ -1,10 +1,10 @@
 """Provider registry, benchmark orchestration, and selection logic.
 
-build_providers()  — instantiate adapters from a loaded Config
-run_benchmark()    — connect each enabled provider, probe, disconnect, rank
-pick_winner()      — return the top-scored ProbeResult
-should_switch()    — policy check: is a candidate meaningfully better?
-save_results() / load_results() — persist last benchmark to TOML
+build_providers()  - instantiate adapters from a loaded Config
+run_benchmark()    - connect each enabled provider, probe, disconnect, rank
+pick_winner()      - return the top-scored ProbeResult
+should_switch()    - policy check: is a candidate meaningfully better?
+save_results() / load_results() - persist last benchmark to TOML
 """
 
 from __future__ import annotations
