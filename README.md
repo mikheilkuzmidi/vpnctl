@@ -17,6 +17,13 @@ It also measures the providers it can reach and ranks them, tests a tunnel in
 a container before touching your routing, and carries the tunnel over TLS on
 port 443 when the network you are on refuses to pass a VPN at all.
 
+![connect, confirm, diagnose, monitor, disconnect](docs/vpnctl.gif)
+
+That is a real run, recorded inside a Linux container because moving the
+default route needs root and on a Mac that means a password prompt. The
+handshake, the route move, the egress address and the throughput figures are
+all the ones the tool actually produced.
+
 ## What it connects to
 
 | Provider | Account | Cost | Notes |
@@ -305,7 +312,7 @@ back a machine with no internet.
 
 ```bash
 pip install -e '.[dev]'
-pytest                 # 151 tests, no network access
+pytest                 # 245 tests, no network access
 ```
 
 Tests never reach the network and never change routing. The Riseup fixture is
